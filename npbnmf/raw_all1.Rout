@@ -1,0 +1,1237 @@
+
+R version 3.6.0 (2019-04-26) -- "Planting of a Tree"
+Copyright (C) 2019 The R Foundation for Statistical Computing
+Platform: x86_64-pc-linux-gnu (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> #########################################################
+> # Sims, npBNMF, regular NMF (L2 & Poisson), PCA, and FA #
+> #########################################################
+> # Lizzy Gibson    # 6/22/2020 ###########################
+> # Added BNMF      # 9/17/2020 ###########################
+> # Cleaned up code # 9/22/202  ###########################
+> #########################################################
+> 
+> # Packages
+> library(tidyverse)
+Registered S3 methods overwritten by 'ggplot2':
+  method         from 
+  [.quosures     rlang
+  c.quosures     rlang
+  print.quosures rlang
+── Attaching packages ─────────────────────────────────────── tidyverse 1.2.1 ──
+✔ ggplot2 3.1.1     ✔ purrr   0.3.2
+✔ tibble  2.1.3     ✔ dplyr   0.8.1
+✔ tidyr   0.8.3     ✔ stringr 1.4.0
+✔ readr   1.3.1     ✔ forcats 0.4.0
+── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
+✖ dplyr::filter() masks stats::filter()
+✖ dplyr::lag()    masks stats::lag()
+> # library(psych)
+> # library(NMF)
+> library(registry, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+> library(pkgmaker, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+> library(rngtools, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+> library(NMF, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+Loading required package: cluster
+NMF - BioConductor layer [OK] | Shared memory capabilities [NO: bigmemory] | Cores 11/12
+  To enable shared memory capabilities, try: install.extras('
+NMF
+')
+> library(GPArotation, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+
+Attaching package: ‘GPArotation’
+
+The following object is masked from ‘package:NMF’:
+
+    entropy
+
+> library(psych, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+
+Attaching package: ‘psych’
+
+The following objects are masked from ‘package:ggplot2’:
+
+    %+%, alpha
+
+> 
+> # Read in Sims
+> load("/ifs/scratch/msph/ehs/eag2186/Data/sim_old_all1.RDA")
+> 
+> ## read job number from system environment
+> ## This only works if run on cluster!!
+> job_num = as.integer(Sys.getenv("SGE_TASK_ID"))
+> job_num
+[1] 86
+> 
+> # load("/ifs/scratch/msph/ehs/eag2186/npbnmf/to_do.RDA")
+> # if (!(job_num %in% to_do)) {stop("Job id already ran.")}
+> 
+> # Run everything
+> 
+> #####
+> # PCA
+> #####
+> 
+> ## Function
+> 
+> get_pca <- function (sim) {
++   # Run PCA centered, not scaled
++   pca_out <- prcomp(sim)
++   rot <- pca_out$rotation
++   ex <- pca_out$x
++   sv <- pca_out$sdev
++   
++   # Explain >=80% of var
++   pve <- sv^2/sum(sv^2)
++   rank <- 0
++   for (i in 1:length(sv)) {
++     if (sum(pve[1:i]) >= 0.8) {
++       rank <- i
++       break
++     }}
++   
++   # Cut scores and patterns to rank
++   rotations <- as_tibble(rot[, 1:rank])
++   scores <- if (rank == 1) {matrix(ex[, 1:rank], nrow = nrow(sim))} else {ex[, 1:rank]}
++   
++   # Predicted values
++   pred <- scores %*% t(rotations) + matrix(rep(apply(sim, 2, mean), each= nrow(scores)), nrow = nrow(scores))
++   
++   list(rotations = rotations, scores = scores, pred = pred, rank = rank)
++ }
+> 
+> get_pca_uncenter <- function (sim) {
++   # Run PCA not centered, not scaled
++   pca_out <- prcomp(sim, center = FALSE)
++   rot <- pca_out$rotation
++   ex <- pca_out$x
++   sv <- pca_out$sdev
++   
++   # Explain >=80% of var
++   pve <- sv^2/sum(sv^2)
++   rank <- 0
++   for (i in 1:length(sv)) {
++     if (sum(pve[1:i]) >= 0.8) {
++       rank <- i
++       break
++     }}
++   
++   # Cut scores and patterns to rank
++   rotations <- as_tibble(rot[, 1:rank])
++   scores <- if (rank == 1) {matrix(ex[, 1:rank], nrow = nrow(sim))} else {ex[, 1:rank]}
++   
++   # Predicted values
++   pred <- scores %*% t(rotations) + matrix(rep(apply(sim, 2, mean), each= nrow(scores)), nrow = nrow(scores))
++   
++   list(rotations = rotations, scores = scores, pred = pred, rank = rank)
++ }
+> 
+> ## Run
+> 
+> output_all <- sim_old_all1[job_num,] %>% 
++   mutate(pca_out       = map(sim, get_pca),
++          pca_rotations = map(pca_out, function(x) x[[1]]),
++          pca_scores    = map(pca_out, function(x) x[[2]]),
++          pca_pred      = map(pca_out, function(x) x[[3]]),
++          pca_rank      = map(pca_out, function(x) x[[4]]))
+> 
+> output_all <- output_all %>% 
++   mutate(pca_uncenter_out       = map(sim, get_pca_uncenter),
++          pca_uncenter_rotations = map(pca_out, function(x) x[[1]]),
++          pca_uncenter_scores    = map(pca_out, function(x) x[[2]]),
++          pca_uncenter_pred      = map(pca_out, function(x) x[[3]]),
++          pca_uncenter_rank      = map(pca_out, function(x) x[[4]]))
+> 
+> #####
+> # Factor Analysis
+> #####
+> 
+> ## Function
+> 
+> get_fa <- function (sim) {
++   # Run FA on 3, 4, and 5 factor models
++   set.seed(1988)
++   fa_3 <- fa(sim, 3, scores = "regression", rotate = "promax")
++   fa_4 <- fa(sim, 4, scores = "regression", rotate = "promax")
++   fa_5 <- fa(sim, 5, scores = "regression", rotate = "promax")
++   
++   # Choose the model with the lowest BIC
++   if (max(fa_5$BIC, fa_4$BIC, fa_3$BIC) == fa_5$BIC) {
++     fa_out <- fa_5
++     rank <- 5
++   } else if (max(fa_5$BIC, fa_4$BIC, fa_3$BIC) == fa_4$BIC) {
++     fa_out <- fa_4
++     rank <- 4
++   } else {
++     fa_out <- fa_3
++     rank <- 3
++   }
++   
++   loadings <- matrix(fa_out$loadings, ncol = ncol(fa_out$scores))
++   fa_scores <- fa_out$scores
++   pred <- fa_scores %*% t(loadings)
++   list(loadings = loadings, fa_scores = fa_scores, pred = pred, rank = rank)
++ }
+> 
+> ## Run
+> 
+> output_all <- output_all %>% 
++   mutate(fa_out       = map(sim, get_fa),
++          fa_rotations = map(fa_out, function(x) x[[1]]),
++          fa_scores    = map(fa_out, function(x) x[[2]]),
++          fa_pred      = map(fa_out, function(x) x[[3]]),
++          fa_rank      = map(fa_out, function(x) x[[4]]))
+Warning message:
+In fa.stats(r = r, f = f, phi = phi, n.obs = n.obs, np.obs = np.obs,  :
+  The estimated weights for the factor scores are probably incorrect.  Try a different factor score estimation method.
+> 
+> #####
+> # L2 NMF
+> #####
+> 
+> ## Function
+> 
+> get_nmf_l2 <- function (sim) {
++   # Run NMF with l2 method 100 times each for 3, 4, and 5 factor models
++   set.seed(1988)
++   nmf_3 <- nmf(sim, 3, nrun = 100, method = "lee")
++   nmf_4 <- nmf(sim, 4, nrun = 100, method = "lee")
++   nmf_5 <- nmf(sim, 5, nrun = 100, method = "lee")
++   
++   # Calculate BIC for each
++   bic_3 <- sum((sim - (basis(nmf_3)%*%coef(nmf_3)))^2) + 
++     (1/2)*(nrow(sim) + ncol(sim)) * 3 * log(nrow(sim) * ncol(sim))
++   bic_4 <- sum((sim - (basis(nmf_4)%*%coef(nmf_4)))^2) + 
++     (1/2)*(nrow(sim) + ncol(sim)) * 4 * log(nrow(sim) * ncol(sim))
++   bic_5 <- sum((sim - (basis(nmf_5)%*%coef(nmf_5)))^2) +  
++     (1/2)*(nrow(sim) + ncol(sim)) * 5 * log(nrow(sim) * ncol(sim))
++   
++   # Choose model with lowest BIC
++   if (max(bic_3, bic_4, bic_5) == bic_3) {
++     nmf_out <- nmf_3
++     rank <- 3
++   } else if (max(bic_3, bic_4, bic_5) == bic_4) {
++     nmf_out <- nmf_4
++     rank <- 4
++   } else {
++     nmf_out <- nmf_5
++     rank <- 5
++     }
++   
++   basis <- basis(nmf_out)
++   coef <- coef(nmf_out)
++   pred <- basis %*% coef
++   
++   list(coef = coef, basis = basis, pred = pred, rank = rank)
++ }
+> 
+> ## Run
+> 
+> output_all <- output_all %>%
++   mutate(nmf_l2_out      = map(sim, get_nmf_l2),
++          nmf_l2_loadings = map(nmf_l2_out, function(x) x[[1]]),
++          nmf_l2_scores   = map(nmf_l2_out, function(x) x[[2]]),
++          nmf_l2_pred     = map(nmf_l2_out, function(x) x[[3]]),
++          nmf_l2_rank     = map(nmf_l2_out, function(x) x[[4]]))
+> 
+> #####
+> # Poisson NMF
+> #####
+> 
+> get_nmf_p <- function (sim) {
++   set.seed(1988)
++   nmf_3 <- nmf(sim, 3, nrun = 100, method = "brunet")
++   nmf_4 <- nmf(sim, 4, nrun = 100, method = "brunet")
++   nmf_5 <- nmf(sim, 5, nrun = 100, method = "brunet")
++   
++   bic_3 <- -sum((sim * log(basis(nmf_3) %*% coef(nmf_3))) - (basis(nmf_3) %*% coef(nmf_3))) + 
++     (1/2)*(nrow(sim) + ncol(sim)) * 3 * log(nrow(sim) * ncol(sim))
++   bic_4 <- -sum((sim * log(basis(nmf_4) %*% coef(nmf_4))) - (basis(nmf_4) %*% coef(nmf_4))) + 
++     (1/2)*(nrow(sim) + ncol(sim)) * 4 * log(nrow(sim) * ncol(sim))
++   bic_5 <- -sum((sim * log(basis(nmf_5) %*% coef(nmf_5))) - (basis(nmf_5) %*% coef(nmf_5))) + 
++     (1/2)*(nrow(sim) + ncol(sim)) * 5 * log(nrow(sim) * ncol(sim))
++   
++   if (max(bic_3, bic_4, bic_5) == bic_3) {
++     nmf_out <- nmf_3
++     rank <- 3
++   } else if (max(bic_3, bic_4, bic_5) == bic_4) {
++     nmf_out <- nmf_4
++     rank <- 4
++   } else {
++     nmf_out <- nmf_5
++     rank <- 5
++   }
++   
++   basis <- basis(nmf_out)
++   coef <- coef(nmf_out)
++   pred <- basis %*% coef
++   
++   list(coef = coef, basis = basis, pred = pred, rank = rank)
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(nmf_p_out      = map(sim, get_nmf_p),
++          nmf_p_loadings = map(nmf_p_out, function(x) x[[1]]),
++          nmf_p_scores   = map(nmf_p_out, function(x) x[[2]]),
++          nmf_p_pred     = map(nmf_p_out, function(x) x[[3]]),
++          nmf_p_rank     = map(nmf_p_out, function(x) x[[4]]))
+> 
+> #####
+> # np BNMF
+> #####
+> 
+> ##### Read function
+> NPBayesNMF <- function(X) {
++   X = as.matrix(X)
++   bnp_switch = 1
++   dim = nrow(X)
++   N = ncol(X)
++   Kinit = ncol(X)
++   
++   nruns = 10
++   end_score = matrix(rep(0, times = nruns))
++   
++   EA = matrix()
++   EWA = matrix()
++   EH = matrix()
++   EW = matrix()
++   
++   for (i in 1:nruns) {
++     
++     K = Kinit
++     
++     w01 = 1
++     w02 = 1
++     
++     W1 = matrix(rgamma(dim*Kinit, shape = dim, scale = 1/dim), nrow = dim, ncol = Kinit)
++     W2 = dim*matrix(1, nrow = dim, ncol = Kinit)
++     
++     a01 = bnp_switch*1/Kinit + (1-bnp_switch)
++     a02 = 1
++     
++     A1 = a01 + bnp_switch*1000*matrix(1, 1, Kinit)/Kinit
++     A2 = a02 + bnp_switch*1000*matrix(1, 1, Kinit)
++     
++     h01 = 1 # Non-sparse prior
++     # h01 = 1/Kinit # Sparse prior
++     h02 = 1
++     
++     H1 = matrix(1, Kinit, N)
++     H2 = matrix(1, Kinit, N)
++     
++     num_iter = 100000
++     
++     score = vector("numeric", length = num_iter)
++     
++     for (iter in 1:num_iter) {
++       
++       EW = W1 / W2
++       
++       # The equivalent of Matlab's repmat(a,2,3) in base R is kronecker(matrix(1,2,3),a)
++       X_reshape = kronecker(array(1, dim = c(K,1,1)), array(t(X), c(1, N, dim)))
++       ElnWA = digamma(W1) - log(W2) + kronecker(array(1, c(dim,1)), digamma(A1)-log(A2))
++       ElnWA_reshape = kronecker(array(1, dim = c(1,N,1)), array(t(ElnWA), c(K, 1, dim)))
++       
++       t1 = array(apply(ElnWA_reshape,c(2,3), max), c(1, Kinit, dim))
++       
++       # % Expected value of log W * expected value of log A
++       ElnWA_reshape = ElnWA_reshape - kronecker(array(1, dim = c(K,1,1)), t1)
++       # % expected value of log H
++       ElnH = digamma(H1) - log(H2)                               
++       
++       P = ElnWA_reshape + kronecker(array(1, dim=c(1,1,dim)), ElnH)
++       P = exp(P)
++       P = P / kronecker(array(1, dim = c(K,1,1)), array(apply(P, 3, colSums), dim = c(1, Kinit, dim)))
++       
++       # % P is a probability to put a lower bound on the ELBO
++       # % expected value of log WAH is concave
++       # % include P to make expectation tractable
++       # % These are update steps from optimizing the ELBO 
++       # % take the gradient with respect to parameter, set to zero, solve
++       
++       H1 = h01 + apply(P * X_reshape, c(1,2), sum)
++       H2 = h02 + t(kronecker(matrix(1, nrow = N, ncol = 1), 
++                              matrix(colSums(EW * kronecker(matrix(1, nrow = dim, ncol = 1), A1/A2)), nrow=1)))
++       
++       W1 = w01 + t(array(apply(X_reshape*P, c(1,3), sum), dim = c(K, dim)))
++       W2 = w02 + kronecker(matrix(1, dim, 1), t(rowSums((H1/H2) * kronecker(matrix(1, 1, N), t(A1/A2)))))
++       
++       A1 = a01 + bnp_switch * t(rowSums(apply(X_reshape*P, c(1,2), sum)))
++       A2 = a02 + bnp_switch * (colSums(W1/W2) * t(rowSums(H1/H2)))
++       
++       # % This is the sparse prior on A, pushing A to zero
++       # If all patterns are zero, don't push anything
++       # prohibits pushing all patterns to zero
++       if ( all(A1/A2 < 10^-3) ) {idx_prune = integer(0)} else {idx_prune = which(A1/A2 < 10^-3)} 
++       
++       if (length(idx_prune) >= 1) {
++         W1 = matrix(W1[,-idx_prune], nrow = dim)
++         W2 = matrix(W2[,-idx_prune], nrow = dim)
++         A1 = matrix(A1[,-idx_prune], nrow = 1)
++         A2 = matrix(A2[,-idx_prune], nrow = 1)
++         H1 = matrix(H1[-idx_prune,], ncol = N)
++         H2 = matrix(H2[-idx_prune,], ncol = N)
++       }
++       
++       K = length(A1)
++       
++       score[iter] = if (ncol(A1/A2) > 1) {
++         sum( abs( X - (W1/W2) %*% diag(as.vector(A1/A2)) %*% (H1/H2) ) )
++       } else if (ncol(A1/A2) == 1) {
++         sum( abs( X - (W1/W2) %*% as.vector(A1/A2) %*% (H1/H2) ) )
++       }
++       
++       if (iter %% 100 == 0) {print(paste0("Job Number: ", job_num, "; Run Number: ", i, "; Iter Number: ", iter, "; Iter Score: ", round(score[iter], 4)))}
++       if (iter > 1 && abs(score[iter-1] - score[iter]) < 1e-5) {
++         print(paste0('Converged in ', iter,' iterations.'))
++         break} # Convergence criteria!
++     }
++     
++     if( iter == num_iter ) warning('Maximum iterations reached. BNMF did not converge.')
++     end_score[i] = score[tail(which(score != 0),1)]
++     
++     #print(paste0("Run Number: ", i, "; Iter Number: ", iter, "; Final Score: ", round(end_score[i], 4)))
++     
++     # % Among the results, use the fitted variational parameters that achieve the highest ELBO
++     if (i == 1 | (i > 1 && (end_score[i] >= max(end_score)))) {
++       EA = A1/A2
++       EWA = (W1/W2)*diag(A1/A2)
++       EH = H1/H2
++       EW = (W1/W2)
++       varA = A1/(A2^2)
++       varW = W1/(W2^2)
++       alphaH = H1
++       betaH = H2
++     }
++     H_CI_low  <- qgamma(0.025, shape = alphaH, rate = betaH)
++     H_CI_high <- qgamma(0.975, shape = alphaH, rate = betaH)
++   }
++   
++   list(EWA = EWA, EH = EH, H_CI_low = H_CI_low, H_CI_high = H_CI_high)
++ }
+> 
+> get_bnmf <- function (sim) {
++   set.seed(1988)
++   bnmf_out <- NPBayesNMF(sim)
++   
++   ewa <- bnmf_out$EWA
++   eh <- bnmf_out$EH
++   pred <- ewa %*% eh
++   rank = ncol(ewa)
++   
++   list(ewa = ewa, eh = eh, pred = pred, rank = rank)
++ }
+> 
+> output_all <- output_all %>% 
++               mutate(bnmf_out      = map(sim, get_bnmf),
++                      bnmf_scores   = map(bnmf_out, function(x) x[[1]]),
++                      bnmf_loadings = map(bnmf_out, function(x) x[[2]]),
++                      bnmf_pred     = map(bnmf_out, function(x) x[[3]]),
++                      bnmf_rank     = map(bnmf_out, function(x) x[[4]]))
+[1] "Job Number: 86; Run Number: 1; Iter Number: 100; Iter Score: 36703.5623"
+[1] "Job Number: 86; Run Number: 1; Iter Number: 200; Iter Score: 36563.3366"
+[1] "Converged in 298 iterations."
+[1] "Job Number: 86; Run Number: 2; Iter Number: 100; Iter Score: 36655.7413"
+[1] "Job Number: 86; Run Number: 2; Iter Number: 200; Iter Score: 36563.8666"
+[1] "Job Number: 86; Run Number: 2; Iter Number: 300; Iter Score: 36561.839"
+[1] "Converged in 338 iterations."
+[1] "Job Number: 86; Run Number: 3; Iter Number: 100; Iter Score: 36671.8917"
+[1] "Job Number: 86; Run Number: 3; Iter Number: 200; Iter Score: 36564.4234"
+[1] "Job Number: 86; Run Number: 3; Iter Number: 300; Iter Score: 36561.9514"
+[1] "Converged in 387 iterations."
+[1] "Job Number: 86; Run Number: 4; Iter Number: 100; Iter Score: 36861.7584"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 200; Iter Score: 36298.3367"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 300; Iter Score: 36286.4033"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 400; Iter Score: 36288.5121"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 500; Iter Score: 36342.4062"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 600; Iter Score: 36562.1916"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 700; Iter Score: 36561.8422"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 800; Iter Score: 36561.947"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 900; Iter Score: 36561.9952"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 1000; Iter Score: 36562.0257"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 1100; Iter Score: 36562.0509"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 1200; Iter Score: 36562.0736"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 1300; Iter Score: 36562.0947"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 1400; Iter Score: 36562.1145"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 1500; Iter Score: 36562.1331"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 1600; Iter Score: 36562.1505"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 1700; Iter Score: 36562.1669"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 1800; Iter Score: 36562.1823"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 1900; Iter Score: 36562.1967"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 2000; Iter Score: 36562.2103"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 2100; Iter Score: 36562.223"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 2200; Iter Score: 36562.2349"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 2300; Iter Score: 36562.2461"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 2400; Iter Score: 36562.2566"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 2500; Iter Score: 36562.2665"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 2600; Iter Score: 36562.2757"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 2700; Iter Score: 36562.2844"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 2800; Iter Score: 36562.2925"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 2900; Iter Score: 36562.3002"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 3000; Iter Score: 36562.3073"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 3100; Iter Score: 36562.314"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 3200; Iter Score: 36562.3203"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 3300; Iter Score: 36562.3263"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 3400; Iter Score: 36562.3318"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 3500; Iter Score: 36562.337"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 3600; Iter Score: 36562.3419"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 3700; Iter Score: 36562.3465"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 3800; Iter Score: 36562.3507"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 3900; Iter Score: 36562.3548"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 4000; Iter Score: 36562.3585"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 4100; Iter Score: 36562.3621"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 4200; Iter Score: 36562.3654"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 4300; Iter Score: 36562.3685"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 4400; Iter Score: 36562.3714"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 4500; Iter Score: 36562.3742"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 4600; Iter Score: 36562.3767"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 4700; Iter Score: 36562.3791"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 4800; Iter Score: 36562.3814"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 4900; Iter Score: 36562.3835"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 5000; Iter Score: 36562.3855"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 5100; Iter Score: 36562.3874"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 5200; Iter Score: 36562.3891"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 5300; Iter Score: 36562.3907"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 5400; Iter Score: 36562.3923"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 5500; Iter Score: 36562.3937"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 5600; Iter Score: 36562.3951"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 5700; Iter Score: 36562.3963"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 5800; Iter Score: 36562.3975"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 5900; Iter Score: 36562.3986"
+[1] "Job Number: 86; Run Number: 4; Iter Number: 6000; Iter Score: 36562.3997"
+[1] "Converged in 6015 iterations."
+[1] "Job Number: 86; Run Number: 5; Iter Number: 100; Iter Score: 36376.7817"
+[1] "Job Number: 86; Run Number: 5; Iter Number: 200; Iter Score: 36306.6152"
+[1] "Job Number: 86; Run Number: 5; Iter Number: 300; Iter Score: 36275.3165"
+[1] "Job Number: 86; Run Number: 5; Iter Number: 400; Iter Score: 36276.3258"
+[1] "Job Number: 86; Run Number: 5; Iter Number: 500; Iter Score: 36354.4703"
+[1] "Job Number: 86; Run Number: 5; Iter Number: 600; Iter Score: 36563.3959"
+[1] "Job Number: 86; Run Number: 5; Iter Number: 700; Iter Score: 36561.9905"
+[1] "Converged in 746 iterations."
+[1] "Job Number: 86; Run Number: 6; Iter Number: 100; Iter Score: 36394.0545"
+[1] "Job Number: 86; Run Number: 6; Iter Number: 200; Iter Score: 36577.6644"
+[1] "Job Number: 86; Run Number: 6; Iter Number: 300; Iter Score: 36562.4484"
+[1] "Job Number: 86; Run Number: 6; Iter Number: 400; Iter Score: 36561.896"
+[1] "Converged in 444 iterations."
+[1] "Job Number: 86; Run Number: 7; Iter Number: 100; Iter Score: 36541.9955"
+[1] "Job Number: 86; Run Number: 7; Iter Number: 200; Iter Score: 36567.9069"
+[1] "Job Number: 86; Run Number: 7; Iter Number: 300; Iter Score: 36562.0009"
+[1] "Converged in 384 iterations."
+[1] "Job Number: 86; Run Number: 8; Iter Number: 100; Iter Score: 36442.9369"
+[1] "Job Number: 86; Run Number: 8; Iter Number: 200; Iter Score: 36506.3859"
+[1] "Job Number: 86; Run Number: 8; Iter Number: 300; Iter Score: 36572.0384"
+[1] "Job Number: 86; Run Number: 8; Iter Number: 400; Iter Score: 36561.8296"
+[1] "Converged in 429 iterations."
+[1] "Job Number: 86; Run Number: 9; Iter Number: 100; Iter Score: 36432.6559"
+[1] "Job Number: 86; Run Number: 9; Iter Number: 200; Iter Score: 36574.7078"
+[1] "Job Number: 86; Run Number: 9; Iter Number: 300; Iter Score: 36562.1353"
+[1] "Converged in 394 iterations."
+[1] "Job Number: 86; Run Number: 10; Iter Number: 100; Iter Score: 36411.2597"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 200; Iter Score: 36493.9573"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 300; Iter Score: 36561.9879"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 400; Iter Score: 36561.8031"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 500; Iter Score: 36561.8698"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 600; Iter Score: 36561.9141"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 700; Iter Score: 36561.9477"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 800; Iter Score: 36561.9772"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 900; Iter Score: 36562.0043"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 1000; Iter Score: 36562.0296"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 1100; Iter Score: 36562.0533"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 1200; Iter Score: 36562.0756"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 1300; Iter Score: 36562.0966"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 1400; Iter Score: 36562.1162"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 1500; Iter Score: 36562.1347"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 1600; Iter Score: 36562.1521"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 1700; Iter Score: 36562.1684"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 1800; Iter Score: 36562.1836"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 1900; Iter Score: 36562.198"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 2000; Iter Score: 36562.2115"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 2100; Iter Score: 36562.2241"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 2200; Iter Score: 36562.236"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 2300; Iter Score: 36562.2471"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 2400; Iter Score: 36562.2575"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 2500; Iter Score: 36562.2673"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 2600; Iter Score: 36562.2765"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 2700; Iter Score: 36562.2852"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 2800; Iter Score: 36562.2933"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 2900; Iter Score: 36562.3008"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 3000; Iter Score: 36562.308"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 3100; Iter Score: 36562.3146"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 3200; Iter Score: 36562.3209"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 3300; Iter Score: 36562.3268"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 3400; Iter Score: 36562.3323"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 3500; Iter Score: 36562.3375"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 3600; Iter Score: 36562.3423"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 3700; Iter Score: 36562.3469"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 3800; Iter Score: 36562.3511"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 3900; Iter Score: 36562.3551"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 4000; Iter Score: 36562.3589"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 4100; Iter Score: 36562.3624"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 4200; Iter Score: 36562.3657"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 4300; Iter Score: 36562.3688"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 4400; Iter Score: 36562.3717"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 4500; Iter Score: 36562.3744"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 4600; Iter Score: 36562.377"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 4700; Iter Score: 36562.3794"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 4800; Iter Score: 36562.3816"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 4900; Iter Score: 36562.3837"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 5000; Iter Score: 36562.3857"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 5100; Iter Score: 36562.3875"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 5200; Iter Score: 36562.3893"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 5300; Iter Score: 36562.3909"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 5400; Iter Score: 36562.3924"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 5500; Iter Score: 36562.3939"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 5600; Iter Score: 36562.3952"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 5700; Iter Score: 36562.3965"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 5800; Iter Score: 36562.3976"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 5900; Iter Score: 36562.3987"
+[1] "Job Number: 86; Run Number: 10; Iter Number: 6000; Iter Score: 36562.3998"
+[1] "Converged in 6006 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   
++   qrU <- qr.Q(qr(U))
++   qrV <- qr.Q(qr(V))
++   
++   m <- ncol(U)
++   n <- ncol(V)
++   
++   dUV <- sqrt( max(m,n) - sum((t(qrU) %*% qrV)^2) )
++   
++   ratio <- dUV/sqrt( max(m,n))
++   
++   ratio
++   
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(pca_norm              = map2(sim, pca_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_uncenter_norm     = map2(sim, pca_uncenter_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          fa_norm               = map2(sim, fa_pred,     function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_l2_norm           = map2(sim, nmf_l2_pred, function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_p_norm            = map2(sim, nmf_p_pred,  function(x,y) norm(x-y, "F")/norm(x, "F")),
++          bnmf_norm             = map2(sim, bnmf_pred,   function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_rotation_ssdist   = map2(true_patterns, pca_rotations,   symm_subspace_dist),
++          pca_scores_ssdist     = map2(true_scores,   pca_scores,      symm_subspace_dist),
++          pca_uncenter_rotation_ssdist   = map2(true_patterns, pca_uncenter_rotations,   symm_subspace_dist),
++          pca_uncenter_scores_ssdist     = map2(true_scores,   pca_uncenter_scores,      symm_subspace_dist),
++          fa_rotations_ssdist   = map2(true_patterns, fa_rotations,    symm_subspace_dist),
++          fa_scores_ssdist      = map2(true_scores,   fa_scores,       symm_subspace_dist),
++          nmf_l2_loading_ssdist = map2(true_patterns, nmf_l2_loadings, symm_subspace_dist),
++          nmf_l2_scores_ssdist  = map2(true_scores,   nmf_l2_scores,   symm_subspace_dist),
++          nmf_p_loading_ssdist  = map2(true_patterns, nmf_p_loadings,  symm_subspace_dist),
++          nmf_p_scores_ssdist   = map2(true_scores,   nmf_p_scores,    symm_subspace_dist),
++          bnmf_loading_ssdist   = map2(true_patterns, bnmf_loadings,   symm_subspace_dist),
++          bnmf_scores_ssdist    = map2(true_scores,   bnmf_scores,     symm_subspace_dist))
+> 
+> #####
+> # Save
+> #####
+>                            
+> output_all <- output_all %>% dplyr::select(-grep("_out", colnames(.)))
+> 
+> save(output_all, file = paste0("/ifs/scratch/msph/ehs/eag2186/npbnmf/raw_all1/raw_all1_", job_num, ".RDA"))
+> 
+> proc.time()
+     user    system   elapsed 
+ 3334.708    24.759 26533.469 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             [1] "Job Number: 158; Run Number: 10; Iter Number: 5600; Iter Score: 37574.6878"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 5700; Iter Score: 37574.6898"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 5800; Iter Score: 37574.6916"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 5900; Iter Score: 37574.6934"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 6000; Iter Score: 37574.6952"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 6100; Iter Score: 37574.6968"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 6200; Iter Score: 37574.6984"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 6300; Iter Score: 37574.6999"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 6400; Iter Score: 37574.7013"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 6500; Iter Score: 37574.7027"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 6600; Iter Score: 37574.704"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 6700; Iter Score: 37574.7052"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 6800; Iter Score: 37574.7064"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 6900; Iter Score: 37574.7075"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 7000; Iter Score: 37574.7086"
+[1] "Job Number: 158; Run Number: 10; Iter Number: 7100; Iter Score: 37574.7096"
+[1] "Converged in 7110 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   
++   qrU <- qr.Q(qr(U))
++   qrV <- qr.Q(qr(V))
++   
++   m <- ncol(U)
++   n <- ncol(V)
++   
++   dUV <- s[1] "Job Number: 153; Run Number: 9; Iter Number: 3900; Iter Score: 38687.3381"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 4000; Iter Score: 38687.3458"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 4100; Iter Score: 38687.3526"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 4200; Iter Score: 38687.3588"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 4300; Iter Score: 38687.3643"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 4400; Iter Score: 38687.3693"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 4500; Iter Score: 38687.374"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 4600; Iter Score: 38687.3783"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 4700; Iter Score: 38687.3823"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 4800; Iter Score: 38687.386"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 4900; Iter Score: 38687.3896"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 5000; Iter Score: 38687.3929"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 5100; Iter Score: 38687.396"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 5200; Iter Score: 38687.399"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 5300; Iter Score: 38687.4018"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 5400; Iter Score: 38687.4045"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 5500; Iter Score: 38687.407"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 5600; Iter Score: 38687.4095"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 5700; Iter Score: 38687.4118"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 5800; Iter Score: 38687.414"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 5900; Iter Score: 38687.416"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 6000; Iter Score: 38687.418"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 6100; Iter Score: 38687.4199"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 6200; Iter Score: 38687.4217"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 6300; Iter Score: 38687.4234"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 6400; Iter Score: 38687.4251"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 6500; Iter Score: 38687.4266"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 6600; Iter Score: 38687.4281"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 6700; Iter Score: 38687.4296"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 6800; Iter Score: 38687.4309"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 6900; Iter Score: 38687.4322"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 7000; Iter Score: 38687.4334"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 7100; Iter Score: 38687.4346"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 7200; Iter Score: 38687.4357"
+[1] "Job Number: 153; Run Number: 9; Iter Number: 7300; Iter Score: 38687.4368"
+[1] "Converged in 7385 iterations."
+[1] "Job Number: 153; Run Number: 10; Iter Number: 100; Iter Score: 38045.5441"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 200; Iter Score: 38450.3407"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 300; Iter Score: 38207.7439"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 400; Iter Score: 37950.2266"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 500; Iter Score: 37834.0976"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 600; Iter Score: 37781.3784"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 700; Iter Score: 37755.8527"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 800; Iter Score: 37742.8604"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 900; Iter Score: 37736.0466"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 1000; Iter Score: 37732.4497"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 1100; Iter Score: 37730.5283"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 1200; Iter Score: 37729.4993"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 1300; Iter Score: 37728.9489"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 1400; Iter Score: 37728.6566"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 1500; Iter Score: 37728.5037"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 1600; Iter Score: 37728.4263"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 1700; Iter Score: 37728.3898"
+[1] "Job Number: 153; Run Number: 10; Iter Number: 1800; Iter Score: 37728.3754"
+[1] "Converged in 1869 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   
++   qrU <- qr.Q(qr(U))
++   qrV <- qr.Q(qr(V))
++   
++   m <- ncol(U)
++   n <- ncol(V)
++   
++   dUV <- sqrt( max(m,n) - sum((t(qrU) %*% qrV)^2) )
++   
++   ratio <- dUV/sqrt( max(m,n))
++   
++   ratio
++   
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(pca_norm              = map2(sim, pca_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_uncenter_norm     = map2(sim, pca_uncenter_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          fa_norm               = map2(sim, fa_pred,     function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_l2_norm           = map2(sim, nmf_l2_pred, function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_p_norm            = map2(sim, nmf_p_pred,  function(x,y) norm(x-y, "F")/norm(x, "F")),
++          bnmf_norm             = map2(sim, bnmf_pred,   function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_rotation_ssdist   = map2(true_patterns, pca_rotations,   symm_subspace_dist),
++          pca_scores_ssdist     = map2(true_scores,   pca_scores,      symm_subspace_dist),
++          pca_uncenter_rotation_ssdist   = map2(true_patterns, pca_uncenter_rotations,   symm_subspace_dist),
++          pca_uncenter_scores_ssdist     = map2(true_scores,   pca_uncenter_scores,      symm_subspace_dist),
++          fa_rotations_ssdist   = map2(true_patterns, fa_rotations,    symm_subspace_dist),
++          fa_scores_ssdist      = map2(true_scores,   fa_scores,       symm_subspace_dist),
++          nmf_l2_loading_ssdist = map2(true_patterns, nmf_l2_loadings, symm_subspace_dist),
++          nmf_l2_scores_ssdist  = map2(true_scores,   nmf_l2_scores,   symm_subspace_dist),
++          nmf_p_loading_ssdist  = map2(true_patterns, nmf_p_loadings,  symm_subspace_dist),
++          nmf_p_scores_ssdist   = map2(true_scores,   nmf_p_scores,    symm_subspace_dist),
++          bnmf_loading_ssdist   = map2(true_patterns, bnmf_loadings,   symm_subspace_dist),
++          bnmf_scores_ssdist    = map2(true_scores,   bnmf_scores,     symm_subspace_dist))
+> 
+> #####
+> # Save
+> #####
+>                            
+> output_all <- output_all %>% dplyr::select(-grep("_out", colnames(.)))
+> 
+> save(output_all, file = paste0("/ifs/scratch/msph/ehs/eag2186/npbnmf/raw_all1/raw_all1_", job_num, ".RDA"))
+> 
+> proc.time()
+     user    system   elapsed 
+14147.394    79.712 14385.692 
+r Score: 39079.0395"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 7100; Iter Score: 39078.9872"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 7200; Iter Score: 39078.9391"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 7300; Iter Score: 39078.895"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 7400; Iter Score: 39078.8545"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 7500; Iter Score: 39078.8173"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 7600; Iter Score: 39078.7832"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 7700; Iter Score: 39078.7518"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 7800; Iter Score: 39078.723"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 7900; Iter Score: 39078.6966"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 8000; Iter Score: 39078.6723"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 8100; Iter Score: 39078.6499"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 8200; Iter Score: 39078.6294"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 8300; Iter Score: 39078.6106"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 8400; Iter Score: 39078.5932"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 8500; Iter Score: 39078.5773"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 8600; Iter Score: 39078.5627"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 8700; Iter Score: 39078.5492"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 8800; Iter Score: 39078.5368"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 8900; Iter Score: 39078.5254"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 9000; Iter Score: 39078.515"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 9100; Iter Score: 39078.5053"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 9200; Iter Score: 39078.4964"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 9300; Iter Score: 39078.4883"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 9400; Iter Score: 39078.4807"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 9500; Iter Score: 39078.4738"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 9600; Iter Score: 39078.4674"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 9700; Iter Score: 39078.4616"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 9800; Iter Score: 39078.4561"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 9900; Iter Score: 39078.4511"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 10000; Iter Score: 39078.4465"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 10100; Iter Score: 39078.4423"
+[1] "Job Number: 148; Run Number: 6; Iter Number: 10200; Iter Score: 39[1] "Job Number: 181; Run Number: 8; Iter Number: 100; Iter Score: 38120.189"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 200; Iter Score: 37878.7016"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 300; Iter Score: 37785.2501"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 400; Iter Score: 37770.4098"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 500; Iter Score: 37819.5709"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 600; Iter Score: 38010.092"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 700; Iter Score: 38559.8919"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 800; Iter Score: 38577.2555"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 900; Iter Score: 38537.5574"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 1000; Iter Score: 38524.4959"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 1100; Iter Score: 38522.7447"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 1200; Iter Score: 38526.9744"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 1300; Iter Score: 38534.4718"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 1400; Iter Score: 38543.0699"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 1500; Iter Score: 38551.6391"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 1600; Iter Score: 38559.7428"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 1700; Iter Score: 38567.0826"
+[1] "Job Number: 181; Run Number: 8; Iter Number: 1800; Iter Score: 385[1] "Job Number: 148; Run Number: 7; Iter Number: 100; Iter Score: 37706.2703"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 200; Iter Score: 37434.4568"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 300; Iter Score: 37530.3423"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 400; Iter Score: 37943.6849"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 500; Iter Score: 38347.6509"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 600; Iter Score: 37978.3713"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 700; Iter Score: 37831.0257"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 800; Iter Score: 37772.4584"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 900; Iter Score: 37749.0213"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 1000; Iter Score: 37739.2454"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 1100; Iter Score: 37735.0248"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 1200; Iter Score: 37733.1538"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 1300; Iter Score: 37732.3118"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 1400; Iter Score: 37731.9319"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 1500; Iter Score: 37731.7621"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 1600; Iter Score: 37731.6889"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 1700; Iter Score: 37731.6604"
+[1] "Job Number: 148; Run Number: 7; Iter Number: 1800; Iter Score: 37731.6528"
+[1] "Converged in 1808 iterations."
+[1] "Job Number: 148; Run Number: 8; Iter Number: 100; Iter Score: 38468.1803"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 200; Iter Score: 38110.8028"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 300; Iter Score: 38881.7856"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 400; Iter Score: 39515.1744"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 500; Iter Score: 39273.2833"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 600; Iter Score: 39655.9817"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 700; Iter Score: 39436.2114"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 800; Iter Score: 39233.8532"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 900; Iter Score: 39179.2427"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 1000; Iter Score: 39161.7092"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 1100; Iter Score: 39156.6067"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 1200; Iter Score: 39155.4469"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 1300; Iter Score: 39153.9789"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 1400; Iter Score: 39151.4852"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 1500; Iter Score: 39148.0047"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 1600; Iter Score: 39143.9221"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 1700; Iter Score: 39139.5216"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 1800; Iter Score: 39135.0337"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 1900; Iter Score: 39130.6161"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 2000; Iter Score: 39126.3869"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 2100; Iter Score: 39122.4224"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 2200; Iter Score: 39118.7579"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 2300; Iter Score: 39115.3522"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 2400; Iter Score: 39112.2101"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 2500; Iter Score: 39109.3248"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 2600; Iter Score: 39106.6721"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 2700; Iter Score: 39104.2373"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 2800; Iter Score: 39102.0033"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 2900; Iter Score: 39099.9558"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 3000; Iter Score: 39098.0856"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 3100; Iter Score: 39096.3858"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 3200; Iter Score: 39094.8414"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 3300; Iter Score: 39093.4367"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 3400; Iter Score: 39092.1536"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 3500; Iter Score: 39090.9798"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 3600; Iter Score: 39089.908"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 3700; Iter Score: 39088.9298"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 3800; Iter Score: 39088.0354"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 3900; Iter Score: 39087.218"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 4000; Iter Score: 39086.4741"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 4100; Iter Score: 39085.7934"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 4200; Iter Score: 39085.1709"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 4300; Iter Score: 39084.6011"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 4400; Iter Score: 39084.0797"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 4500; Iter Score: 39083.6026"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 4600; Iter Score: 39083.1658"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 4700; Iter Score: 39082.7658"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 4800; Iter Score: 39082.3999"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 4900; Iter Score: 39082.0653"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 5000; Iter Score: 39081.7595"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 5100; Iter Score: 39081.4795"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 5200; Iter Score: 39081.223"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 5300; Iter Score: 39080.988"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 5400; Iter Score: 39080.7727"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 5500; Iter Score: 39080.5755"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 5600; Iter Score: 39080.3948"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 5700; Iter Score: 39080.2293"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 5800; Iter Score: 39080.0776"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 5900; Iter Score: 39079.9385"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 6000; Iter Score: 39079.811"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 6100; Iter Score: 39079.6941"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 6200; Iter Score: 39079.5869"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 6300; Iter Score: 39079.4886"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 6400; Iter Score: 39079.3985"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 6500; Iter Score: 39079.3158"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 6600; Iter Score: 39079.24"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 6700; Iter Score: 39079.1705"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 6800; Iter Score: 39079.1067"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 6900; Iter Score: 39079.0482"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 7000; Iter Score: 39078.9946"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 7100; Iter Score: 39078.9453"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 7200; Iter Score: 39078.9002"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 7300; Iter Score: 39078.8587"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 7400; Iter Score: 39078.8207"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 7500; Iter Score: 39078.7858"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 7600; Iter Score: 39078.7538"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 7700; Iter Score: 39078.7244"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 7800; Iter Score: 39078.6975"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 7900; Iter Score: 39078.6727"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 8000; Iter Score: 39078.65"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 8100; Iter Score: 39078.6291"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 8200; Iter Score: 39078.61"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 8300; Iter Score: 39078.5924"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 8400; Iter Score: 39078.5762"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 8500; Iter Score: 39078.5614"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 8600; Iter Score: 39078.5478"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 8700; Iter Score: 39078.5352"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 8800; Iter Score: 39078.5237"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 8900; Iter Score: 39078.5132"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 9000; Iter Score: 39078.5035"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 9100; Iter Score: 39078.4945"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 9200; Iter Score: 39078.4863"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 9300; Iter Score: 39078.4788"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 9400; Iter Score: 39078.4718"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 9500; Iter Score: 39078.4654"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 9600; Iter Score: 39078.4595"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 9700; Iter Score: 39078.4541"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 9800; Iter Score: 39078.4491"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 9900; Iter Score: 39078.4446"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 10000; Iter Score: 39078.4403"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 10100; Iter Score: 39078.4364"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 10200; Iter Score: 39078.4329"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 10300; Iter Score: 39078.4295"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 10400; Iter Score: 39078.4265"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 10500; Iter Score: 39078.4237"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 10600; Iter Score: 39078.4211"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 10700; Iter Score: 39078.4187"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 10800; Iter Score: 39078.4165"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 10900; Iter Score: 39078.4144"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 11000; Iter Score: 39078.4125"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 11100; Iter Score: 39078.4108"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 11200; Iter Score: 39078.4092"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 11300; Iter Score: 39078.4077"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 11400; Iter Score: 39078.4063"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 11500; Iter Score: 39078.405"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 11600; Iter Score: 39078.4038"
+[1] "Job Number: 148; Run Number: 8; Iter Number: 11700; Iter Score: 39078.4027"
+[1] "Converged in 11787 iterations."
+[1] "Job Number: 148; Run Number: 9; Iter Number: 100; Iter Score: 38348.2638"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 200; Iter Score: 37768.6369"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 300; Iter Score: 37449.2354"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 400; Iter Score: 37481.9382"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 500; Iter Score: 38193.2204"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 600; Iter Score: 38809.9352"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 700; Iter Score: 39242.0492"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 800; Iter Score: 39295.8666"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 900; Iter Score: 39225.9868"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 1000; Iter Score: 39198.735"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 1100; Iter Score: 39182.8985"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 1200; Iter Score: 39171.2833"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 1300; Iter Score: 39161.8147"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 1400; Iter Score: 39153.7046"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 1500; Iter Score: 39146.6308"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 1600; Iter Score: 39140.3633"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 1700; Iter Score: 39134.7271"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 1800; Iter Score: 39129.641"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 1900; Iter Score: 39125.0469"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 2000; Iter Score: 39120.9246"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 2100; Iter Score: 39117.1924"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 2200; Iter Score: 39113.7937"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 2300; Iter Score: 39110.7138"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 2400; Iter Score: 39107.9034"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 2500; Iter Score: 39105.3396"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 2600; Iter Score: 39102.9978"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 2700; Iter Score: 39100.8562"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 2800; Iter Score: 39098.9006"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 2900; Iter Score: 39097.1241"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 3000; Iter Score: 39095.5099"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 3100; Iter Score: 39094.0457"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 3200; Iter Score: 39092.7109"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 3300; Iter Score: 39091.4905"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 3400; Iter Score: 39090.3756"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 3500; Iter Score: 39089.3581"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 3600; Iter Score: 39088.4288"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 3700; Iter Score: 39087.5788"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 3800; Iter Score: 39086.8045"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 3900; Iter Score: 39086.0973"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 4000; Iter Score: 39085.4505"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 4100; Iter Score: 39084.8586"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 4200; Iter Score: 39084.3168"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 4300; Iter Score: 39083.8211"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 4400; Iter Score: 39083.3673"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 4500; Iter Score: 39082.9517"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 4600; Iter Score: 39082.5712"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 4700; Iter Score: 39082.2232"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 4800; Iter Score: 39081.905"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 4900; Iter Score: 39081.6139"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 5000; Iter Score: 39081.3473"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 5100; Iter Score: 39081.103"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 5200; Iter Score: 39080.8792"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 5300; Iter Score: 39080.674"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 5400; Iter Score: 39080.486"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 5500; Iter Score: 39080.3139"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 5600; Iter Score: 39080.156"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 5700; Iter Score: 39080.0113"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 5800; Iter Score: 39079.8786"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 5900; Iter Score: 39079.7569"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 6000; Iter Score: 39079.6452"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 6100; Iter Score: 39079.5428"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 6200; Iter Score: 39079.4489"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 6300; Iter Score: 39079.3628"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 6400; Iter Score: 39079.2838"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 6500; Iter Score: 39079.2113"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 6600; Iter Score: 39079.1447"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 6700; Iter Score: 39079.0837"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 6800; Iter Score: 39079.0277"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 6900; Iter Score: 39078.9762"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 7000; Iter Score: 39078.9291"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 7100; Iter Score: 39078.8857"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 7200; Iter Score: 39078.846"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 7300; Iter Score: 39078.8095"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 7400; Iter Score: 39078.776"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 7500; Iter Score: 39078.7452"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 7600; Iter Score: 39078.7169"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 7700; Iter Score: 39078.691"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 7800; Iter Score: 39078.6671"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 7900; Iter Score: 39078.6452"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 8000; Iter Score: 39078.6251"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 8100; Iter Score: 39078.6066"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 8200; Iter Score: 39078.5896"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 8300; Iter Score: 39078.574"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 8400; Iter Score: 39078.5597"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 8500; Iter Score: 39078.5465"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 8600; Iter Score: 39078.5343"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 8700; Iter Score: 39078.5231"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 8800; Iter Score: 39078.5129"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 8900; Iter Score: 39078.5034"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 9000; Iter Score: 39078.4947"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 9100; Iter Score: 39078.4867"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 9200; Iter Score: 39078.4793"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 9300; Iter Score: 39078.4726"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 9400; Iter Score: 39078.4663"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 9500; Iter Score: 39078.4605"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 9600; Iter Score: 39078.4552"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 9700; Iter Score: 39078.4503"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 9800; Iter Score: 39078.4458"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 9900; Iter Score: 39078.4416"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 10000; Iter Score: 39078.4378"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 10100; Iter Score: 39078.4342"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 10200; Iter Score: 39078.4309"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 10300; Iter Score: 39078.4279"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 10400; Iter Score: 39078.4251"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 10500; Iter Score: 39078.4225"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 10600; Iter Score: 39078.4201"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 10700; Iter Score: 39078.4179"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 10800; Iter Score: 39078.4158"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 10900; Iter Score: 39078.4139"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 11000; Iter Score: 39078.4122"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 11100; Iter Score: 39078.4105"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 11200; Iter Score: 39078.409"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 11300; Iter Score: 39078.4076"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 11400; Iter Score: 39078.4063"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 11500; Iter Score: 39078.4051"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 11600; Iter Score: 39078.4039"
+[1] "Job Number: 148; Run Number: 9; Iter Number: 11700; Iter Score: 39078.4029"
+[1] "Converged in 11727 iterations."
+[1] "Job Number: 148; Run Number: 10; Iter Number: 100; Iter Score: 38198.4389"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 200; Iter Score: 37569.8403"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 300; Iter Score: 38138.8781"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 400; Iter Score: 38774.1928"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 500; Iter Score: 38486.2585"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 600; Iter Score: 38259.2684"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 700; Iter Score: 38032.665"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 800; Iter Score: 37871.3989"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 900; Iter Score: 37792.3173"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 1000; Iter Score: 37757.8768"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 1100; Iter Score: 37743.2956"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 1200; Iter Score: 37736.9142"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 1300; Iter Score: 37734.0552"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 1400; Iter Score: 37732.7521"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 1500; Iter Score: 37732.1513"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 1600; Iter Score: 37731.8753"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 1700; Iter Score: 37731.7505"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 1800; Iter Score: 37731.6966"
+[1] "Job Number: 148; Run Number: 10; Iter Number: 1900; Iter Score: 37731.6763"
+[1] "Converged in 1986 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   
++   qrU <- qr.Q(qr(U))
++   qrV <- qr.Q(qr(V))
++   
++   m <- ncol(U)
++   n <- ncol(V)
++   
++   dUV <- sqrt( max(m,n) - sum((t(qrU) %*% qrV)^2) )
++   
++   ratio <- dUV/sqrt( max(m,n))
++   
++   ratio
++   
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(pca_norm              = map2(sim, pca_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_uncenter_norm     = map2(sim, pca_uncenter_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          fa_norm               = map2(sim, fa_pred,     function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_l2_norm           = map2(sim, nmf_l2_pred, function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_p_norm            = map2(sim, nmf_p_pred,  function(x,y) norm(x-y, "F")/norm(x, "F")),
++          bnmf_norm             = map2(sim, bnmf_pred,   function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_rotation_ssdist   = map2(true_patterns, pca_rotations,   symm_subspace_dist),
++          pca_scores_ssdist     = map2(true_scores,   pca_scores,      symm_subspace_dist),
++          pca_uncenter_rotation_ssdist   = map2(true_patterns, pca_uncenter_rotations,   symm_subspace_dist),
++          pca_uncenter_scores_ssdist     = map2(true_scores,   pca_uncenter_scores,      symm_subspace_dist),
++          fa_rotations_ssdist   = map2(true_patterns, fa_rotations,    symm_subspace_dist),
++          fa_scores_ssdist      = map2(true_scores,   fa_scores,       symm_subspace_dist),
++          nmf_l2_loading_ssdist = map2(true_patterns, nmf_l2_loadings, symm_subspace_dist),
++          nmf_l2_scores_ssdist  = map2(true_scores,   nmf_l2_scores,   symm_subspace_dist),
++          nmf_p_loading_ssdist  = map2(true_patterns, nmf_p_loadings,  symm_subspace_dist),
++          nmf_p_scores_ssdist   = map2(true_scores,   nmf_p_scores,    symm_subspace_dist),
++          bnmf_loading_ssdist   = map2(true_patterns, bnmf_loadings,   symm_subspace_dist),
++          bnmf_scores_ssdist    = map2(true_scores,   bnmf_scores,     symm_subspace_dist))
+> 
+> #####
+> # Save
+> #####
+>                            
+> output_all <- output_all %>% dplyr::select(-grep("_out", colnames(.)))
+> 
+> save(output_all, file = paste0("/ifs/scratch/msph/ehs/eag2186/npbnmf/raw_all1/raw_all1_", job_num, ".RDA"))
+> 
+> proc.time()
+     user    system   elapsed 
+19607.927   149.858 20074.219 
+er Number: 11700; Iter Score: 37679.534"
+[1] "Converged in 11702 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   
++   qrU <- qr.Q(qr(U))
++   qrV <- qr.Q(qr(V))
++   
++   m <- ncol(U)
++   n <- ncol(V)
++   
++   dUV <- sqrt( max(m,n) - sum((t(qrU) %*% qrV)^2) )
++   
++   ratio <- dUV/sqrt( max(m,n))
++   
++   ratio
++   
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(pca_norm              = map2(sim, pca_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_uncenter_norm     = map2(sim, pca_uncenter_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          fa_norm               = map2(sim, fa_pred,     function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_l2_norm           = map2(sim, nmf_l2_pred, function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_p_norm            = map2(sim, nmf_p_pred,  function(x,y) norm(x-y, "F")/norm(x, "F")),
++          bnmf_norm             = map2(sim, bnmf_pred,   function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_rotation_ssdist   = map2(true_patterns, pca_rotations,   symm_subspace_dist),
++          pca_scores_ssdist     = map2(true_scores,   pca_scores,      symm_subspace_dist),
++          pca_uncenter_rotation_ssdist   = map2(true_patterns, pca_uncenter_rotations,   symm_subspace_dist),
++          pca_uncenter_scores_ssdist     = map2(true_scores,   pca_uncenter_scores,      symm_subspace_dist),
++          fa_rotations_ssdist   = map2(true_patterns, fa_rotations,    symm_subspace_dist),
++          fa_scores_ssdist      = map2(true_scores,   fa_scores,       symm_subspace_dist),
++          nmf_l2_loading_ssdist = map2(true_patterns, nmf_l2_loadings, symm_subspace_dist),
++          nmf_l2_scores_ssdist  = map2(true_scores,   nmf_l2_scores,   symm_subspace_dist),
++          nmf_p_loading_ssdist  = map2(true_patterns, nmf_p_loadings,  symm_subspace_dist),
++          nmf_p_scores_ssdist   = map2(true_scores,   nmf_p_scores,    symm_subspace_dist),
++          bnmf_loading_ssdist   = map2(true_patterns, bnmf_loadings,   symm_subspace_dist),
++          bnmf_scores_ssdist    = map2(true_scores,   bnmf_scores,     symm_subspace_dist))
+> 
+> #####
+> # Save
+> #####
+>                            
+> output_all <- output_all %>% dplyr::select(-grep("_out", colnames(.)))
+> 
+> save(output_all, file = paste0("/ifs/scratch/msph/ehs/eag2186/npbnmf/raw_all1/raw_all1_", job_num, ".RDA"))
+> 
+> proc.time()
+     user    system   elapsed 
+17965.005   125.758 18103.026 

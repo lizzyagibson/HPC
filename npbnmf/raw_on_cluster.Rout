@@ -1,0 +1,2410 @@
+
+R version 3.6.0 (2019-04-26) -- "Planting of a Tree"
+Copyright (C) 2019 The R Foundation for Statistical Computing
+Platform: x86_64-pc-linux-gnu (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> #########################################################
+> # Sims, npBNMF, regular NMF (L2 & Poisson), PCA, and FA #
+> #########################################################
+> # Lizzy Gibson    # 6/22/2020 ###########################
+> # Added BNMF      # 9/17/2020 ###########################
+> # Cleaned up code # 9/22/202  ###########################
+> #########################################################
+> 
+> # Packages
+> library(tidyverse)
+Registered S3 methods overwritten by 'ggplot2':
+  method         from 
+  [.quosures     rlang
+  c.quosures     rlang
+  print.quosures rlang
+── Attaching packages ─────────────────────────────────────── tidyverse 1.2.1 ──
+✔ ggplot2 3.1.1     ✔ purrr   0.3.2
+✔ tibble  2.1.3     ✔ dplyr   0.8.1
+✔ tidyr   0.8.3     ✔ stringr 1.4.0
+✔ readr   1.3.1     ✔ forcats 0.4.0
+── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
+✖ dplyr::filter() masks stats::filter()
+✖ dplyr::lag()    masks stats::lag()
+> # library(psych)
+> # library(NMF)
+> library(registry, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+> library(pkgmaker, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+> library(rngtools, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+> library(NMF, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+Loading required package: cluster
+NMF - BioConductor layer [OK] | Shared memory capabilities [NO: bigmemory] | Cores 11/12
+  To enable shared memory capabilities, try: install.extras('
+NMF
+')
+> library(GPArotation, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+
+Attaching package: ‘GPArotation’
+
+The following object is masked from ‘package:NMF’:
+
+    entropy
+
+> library(psych, lib.loc = "/ifs/home/msph/ehs/eag2186/local/hpc/")
+
+Attaching package: ‘psych’
+
+The following objects are masked from ‘package:ggplot2’:
+
+    %+%, alpha
+
+> 
+> # Read in Sims
+> load("/ifs/scratch/msph/ehs/eag2186/Data/sim_old.RDA")
+> 
+> ## read job number from system environment
+> ## This only works if run on cluster!!
+> job_num = as.integer(Sys.getenv("SGE_TASK_ID"))
+> job_num
+[1] 188> 
+
+> # load("/ifs/scratch/msph/ehs/eag2186/npbnmf/to_do.RDA")
+> # if (!(job_num %in% to_do)) {stop("Job id already ran.")}
+> 
+> # Run everything
+> 
+> #####
+> # PCA
+> #####
+> 
+> ## Function
+> 
+> get_pca <- function (sim) {
++   # Run PCA centered, not scaled
++   pca_out <- prcomp(sim)
++   rot <- pca_out$rotation
++   ex <- pca_out$x
++   sv <- pca_out$sdev
++   
++   # Explain >=80% of var
++   pve <- sv^2/sum(sv^2)
++   rank <- 0
++   for (i in 1:length(sv)) {+     if (sum(pve[1:i]) >= 0.8) {
++       rank <- i
++       break
++     }}
+++   
++   # Cut scores and patterns to rank
++   rotations <- as_tibble(rot[, 1:rank])
++   scores <- if (rank == 1) {matrix(ex[, 1:rank], nrow = nrow(sim))} else {ex[, 1:rank]}
++   
++   # Predicted values
++   pred <- scores %*% t(rotations) + matrix(rep(apply(sim, 2, mean), each= nrow(scores)), nrow = nrow(scores))
++   
++   list(rotations = rotations, scores = scores, pred = pred, rank = rank)
++ }
+> 
+> get_pca_uncenter <- function (sim) {
++   # Run PCA not centered, not scaled
++   pca_out <- prcomp(sim, center = FALSE)
++   rot <- pca_out$rotation
++   ex <- pca_out$x
++   sv <- pca_out$sdev
++   
++   # Explain >=80% of var
++   pve <- sv^2/sum(sv^2)
++   rank <- 0
++   for (i in 1:length(sv)) {
++     if (sum(pve[1:i]) >= 0.8) {
++       rank <- i
++       break
++     }}
++   
++   # Cut scores and patterns to rank
++   rotations <- as_tibble(rot[, 1:rank])
++   scores <- if (rank == 1) {matrix(ex[, 1:rank], nrow = nrow(sim))} else {ex[, 1:rank]}
++   
++   # Predicted values
++   pred <- scores %*% t(rotations) + matrix(rep(apply(sim, 2, mean), each= nrow(scores)), nrow = nrow(scores))
++   
++   list(rotations = rotations, scores = scores, pred = pred, rank = rank)
++ }
+> 
+> ## Run
+> 
+> output_all <- sim_old[job_num,] %>% 
++   mutate(pca_out       = map(sim, get_pca),
++          pca_rotations = map(pca_out, function(x) x[[1]]),
++          pca_scores    = map(pca_out, function(x) x[[2]]),
++          pca_pred      = map(pca_out, function(x) x[[3]]),
++          pca_rank      = map(pca_out, function(x) x[[4]]))
+> 
+> output_all <- output_all %>% 
++   mutate(pca_uncenter_out       = map(sim, get_pca_uncenter),
++          pca_uncenter_rotations = map(pca_out, function(x) x[[1]]),
++          pca_uncenter_scores    = map(pca_out, function(x) x[[2]]),
++          pca_uncenter_pred      = map(pca_out, function(x) x[[3]]),
++          pca_uncenter_rank      = map(pca_out, function(x) x[[4]]))
+Warning message:
+Calling `as_tibble()` on a vector is discouraged, because the behavior is likely to change in the future. Use `tibble::enframe(name = NULL)` instead.
+This warning is displayed once per session. 
+> +   fa_4 <- fa(sim, 4, scores = "regression", rotate = "promax")
++   fa_5 <- fa(sim, 5, scores = "regression", rotate = "promax")
++   
++   # Choose the model with the lowest BIC
++   if (max(fa_5$BIC, fa_4$BIC, fa_3$BIC) == fa_5$BIC) {
++     fa_out <- fa_5
++     rank <- 5
++   } else if (max(fa_5$BIC, fa_4$BIC, fa_3$BIC) == fa_4$BIC) {
++     fa_out <- fa_4
++     rank <- 4
++   } else {
++     fa_out <- fa_3
++     rank <- 3
++   }
++   
++   loadings <- matrix(fa_out$loadings, ncol = ncol(fa_out$scores))
++   fa_scores <- fa_out$scores
++   pred <- fa_scores %*% t(loadings)
++   list(loadings = loadings, fa_scores = fa_scores, pred = pred, rank = rank)
++ }
+> 
+> ## Run
+> 
+> output_all <- output_all %>% 
++   mutate(fa_out       = map(sim, get_fa),
++          fa_rotations = map(fa_out, function(x) x[[1]]),
++          fa_scores    = map(fa_out, function(x) x[[2]]),
++          fa_pred      = map(fa_out, function(x) x[[3]]),
++          fa_rank      = map(fa_out, function(x) x[[4]]))
+> 
+> #####
+> # L2 NMF
+> #####
+> 
+> ## Function
+> 
+> get_nmf_l2 <- function (sim) {
++   # Run NMF with l2 method 100 times each for 3, 4, and 5 factor models
++   set.seed(1988)
++   nmf_3 <- nmf(sim, 3, nrun = 100, method = "lee")
++   nmf_4 <- nmf(sim, 4, nrun = 100, method = "lee")
++   nmf_5 <- nmf(sim, 5, nrun = 100, method = "lee")
++   
++   # Calculate BIC for each
++   bic_3 <- sum((sim - (basis(nmf_3)%*%coef(nmf_3)))^2) + 
++     (1/2)*(nrow(sim) + ncol(sim)) * 3 * log(nrow(sim) * ncol(sim))
++   bic_4 <- sum((sim - (basis(nmf_4)%*%coef(nmf_4)))^2) + 
++     (1/2)*(nrow(sim) + ncol(sim)) * 4 * log(nrow(sim) * ncol(sim))
++   bic_5 <- sum((sim - (basis(nmf_5)%*%coef(nmf_5)))^2) +  
++     (1/2)*(nrow(sim) + ncol(sim)) * 5 * log(nrow(sim) * ncol(sim))
++   
++   # Choose model with lowest BIC
++   if (max(bic_3, bic_4, bic_5) == bic_3) {
++     nmf_out <- nmf_3
++     rank <- 3
++   } else if (max(bic_3, bic_4, bic_5) == bic_4) {
++     nmf_out <- nmf_4
++     rank <- 4
++   } else {
++     nmf_out <- nmf_5
++     rank <- 5
++     }
++   
++   basis <- basis(nmf_out)
++   coef <- coef(nmf_out)
++   pred <- basis %*% coef
++   
++   list(coef = coef, basis = basis, pred = pred, rank = rank)
++ }
+> 
+> ## Run
+> 
+> output_all <- output_all %>%
++   mutate(nmf_l2_out      = map(sim, get_nmf_l2),
++          nmf_l2_loadings = map(nmf_l2_out, function(x) x[[1]]),
++          nmf_l2_scores   = map(nmf_l2_out, function(x) x[[2]]),
++          nmf_l2_pred     = map(nmf_l2_out, function(x) x[[3]]),
++          nmf_l2_rank     = map(nmf_l2_out, function(x) x[[4]])>>> 
+> #####
+> # Poisson NMF
+> #####
+> 
+> get_nmfp <- function (sim) {
++   set.seed(1988)
++   nmf_3 <- nmf(sim, 3, nrun = 100, method = "brunet")
++   nmf_4 <- nmf(sim, 4, nrun = 100, method = "brunet")
++   nmf_5 <>> 
+> #####
+> # Poisson NMF
+> #####
+> 
+> get_nmf_p <- function (sim) {
++   set.seed(1988)
++   nmf_3 <- nmf(sim, 3, nrun = 100, method = "brunet")
++   nmf_4 <- nmf(sim, 4, nrun = 100, method = "brunet")
++   nmf_5 <- nmf(sim, 5, nrun = 100, method = "brunet")
++   
++   bic_3 <- -sum((sim * log(basis(nmf_3) %*% coef(nmf_3))) - (basis(nmf_3) %*% coef(nmf_3))) + 
++     (1/2)*(nrow(sim) + ncol(sim)) * 3 * log(nrow(sim) * ncol(sim))
++   bic_4 <- -sum((sim * log(basis(nmf_4) %*% coef(nmf_4))) - (basis(nmf_4) %*% coef(nmf_4))) + 
++     (1/2)*(nrow(sim) + ncol(sim)) * 4 * log(nrow(sim) * ncol(sim))
++   bic_5 <- -sum((sim * log(basis(nmf_5) %*% coef(nmf_5))) - (basis(nmf_5) %*% coef(nmf_5))) + 
++     (1/2)*(nrow(sim) + ncol(sim)) * 5 * log(nrow(sim) * ncol(sim))
++   
++   if (max(bic_3, bic_4, bic_5) == bic_3) {
++     nmf_out <- nmf_3
++     rank <- 3
++   } else if (max(bic_3, bic_4, bic_5) == bic_4) {
++     nmf_out <- nmf_4
++     rank <- 4
++   } else {
++     nmf_out <- nmf_5
++     rank <- 5
++   }
++   
++   basis <- basis(nmf_out)
++   coef <- coef(nmf_out)
++   pred <- basis %*% coef
++   
++   list(coef = coef, basis = basis, pred = pred, rank = rank)
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(nmf_p_out      = map(sim, get_nmf_p),
++          nmf_p_loadings = map(nmf_p_out, >> 
+> #####
+> # np BNMF
+> #####
+> 
+> ##### Read function
+> NPBayesNMF <- function(X) {
++   X = as.matrix(X)
++   bnp_switch = 1
++   dim = nrow(X)
++   N = ncol(X)
++   Kinit = ncol(X)
++   
++   nruns = 10
++   end_scor> 
+> #####
+> # np BNMF
+> #####
+> 
+> ##### Read function
+> NPBayesNMF <- function(X) {
++   X = as.matrix(X)
++   bnp_switch = 1
++   dim = nrow(X)
++   N = ncol(X)
++   Kinit = ncol(X)
++   
++   nruns = 10
++   end_score = matrix(rep(0, times = nruns))
++   
++   EA = matrix()
++   EWA = matrix()
++   EH = matrix()
++   EW = matrix()
++   
++   for (i in 1:nruns) {
++     
++     K = Kinit
++     
++     w01 = 1
++     w02 = 1
++     
++     W1 = matrix(rgamma(dim*Kinit, shape = dim, scale = 1/dim), nrow = dim, ncol = Kinit)
++     W2 = dim*matrix(1, nrow = dim, ncol = Kinit)
++     
++     a01 = bnp_switch*1/Kinit + (1-bnp_switch)
++     a02 = 1
++     
++     A1 = a01 + bnp_switch*1000*matrix(1, 1, Kinit)/Kinit
++     A2 = a02 + bnp_switch*1000*matrix(1, 1, Kinit)
++     
++     h01 = 1 # Non-sparse prior
++     # h01 = 1/Kinit # Sparse prior
++     h02 = 1
++     
++     H1 = matrix(1, Kinit, N)
++     H2 = matrix(1, Kinit, N)
++     
++     num_iter = 100000
++     
++     score = vector("numeric", length = num_iter)
++     
++     for (iter in 1:num_iter) {
++       
++       EW = W1 / W2
++       
++       # The equivalent of Matlab's repmat(a,2,3) in base R is kronecker(matrix(1,2,3),a)
++       X_reshape = kronecker(array(1, dim = c(K,1,1)), array(t(X), c(1, N, dim)))
++       ElnWA = digamma(W1) - log(W2) + kronecker(array(1, c(dim,1)), digamma(A1)-log(A2))
++       ElnWA_reshape = kronecker(array(1, dim = c(1,N,1)), array(t(ElnWA), c(K, 1, dim)))
++       
++       t1 = array(apply(ElnWA_reshape,c(2,3), max), c(1, Kinit, dim))
++       
++       # % Expected value of log W * expected value of log A
++       ElnWA_reshape = ElnWA_reshape - kronecker(array(1, dim = c(K,1,1)), t1)
++       # % expected value of log H
++       ElnH = digamma(H1) - log(H2)                               
++       
++       P = ElnWA_reshape + kronecker(array(1, dim=c(1,1,dim)), ElnH)
++       P = exp(P)
++       P = P / kronecker(array(1, dim = c(K,1,1)), array(apply(P, 3, colSums), dim = c(1, Kinit, dim)))
++       
++       # % P is a probability to put a lower bound on the ELBO
++       # % expected value of log WAH is concave
++       # % include P to make expectation tractable
++       # % These are update steps from optimizing the ELBO 
++       # % take the gradient with respect to parameter, set to zero, solve
++       
++       H1 = h01 + apply(P * X_reshape, c(1,2), sum)
++       H2 = h02 + t(kronecker(matrix(1, nrow = N, ncol = 1), 
++                              matrix(colSums(EW * kronecker(matrix(1, nrow = dim, ncol = 1), A1/A2)), nrow=1)))
++       
++       W1 = w01 + t(array(apply(X_reshape*P, c(1,3), sum), dim = c(K, dim)))
++       W2 = w02 + kronecker(matrix(1, dim, 1), t(rowSums((H1/H2) * kronecker(matrix(1, 1, N), t(A1/A2)))))
++       
++       A1 = a01 + bnp_switch * t(rowSums(apply(X_reshape*P, c(1,2), sum)))
++       A2 = a02 + bnp_switch * (colSums(W1/W2) * t(rowSums(H1/H2)))
++       
++       # % This is the sparse prior on A, pushing A to zero
++       # If all patterns are zero, don't push anything
++       # prohibits pushing all patterns to zero
++       if ( all(A1/A2 < 10^-3) ) {idx_prune = integer(0)} else {idx_prune = which(A1/A2 < 10^-3)} 
++       
++       if (length(idx_prune) >= 1) {
++         W1 = matrix(W1[,-idx_prune], nrow = dim)
++         W2 = matrix(W2[,-idx_prune], nrow = dim)
++         A1 = matrix(A1[,-idx_prune], nrow = 1)
++         A2 = matrix(A2[,-idx_prune], nrow = 1)
++         H1 = matrix(H1[-idx_prune,], ncol = N)
++         H2 = matrix(H2[-idx_prune,], ncol = N)
++       }
++       
++       K = length(A1)
++       
++       score[iter] = if (ncol(A1/A2) > 1) {
++         sum( abs( X - (W1/W2) %*% diag(as.vector(A1/A2)) %*% (H1/H2) ) )
++       } else if (ncol(A1/A2) == 1) {
++         sum( abs( X - (W1/W2) %*% as.vector(A1/A2) %*% (H1/H2) ) )
++       }
++       
++       if (iter %% 100 == 0) {print(paste0("Job Number: ", job_num, "; Run Number: ", i, "; Iter Number: ", iter, "; Iter Score: ", round(score[iter], 4)))}
++       if (iter > 1 && abs(score[iter-1] - score[iter]) < 1e-5) {
++         print(paste0('Converged in ', iter,' iterations.'))
++         break} # Convergence criteria!
++     }
++     
++     if( iter == num_iter ) warning('Maximum iterations reached. BNMF did not converge.')
++     end_score[i] = score[tail(which(score != 0),1)]
++     
++     #print(paste0("Run Number: ", i, "; Iter Number: ", iter, "; Final Score: ", round(end_score[i], 4)))
++     
++     # % Among the results, use the fitted variational parameters that achieve the highest ELBO
++     if (i == 1 | (i > 1 && (end_score[i] >= max(end_score)))) {
++       EA = A1/A2
++       EWA = (W1/W2)*diag(A1/A2)
++       EH = H1/H2
++       EW = (W1/W2)
++       varA = A1/(A2^2)
++       varW = W1/(W2^2)
++       alphaH = H1
++       betaH = H2
++     }
++     H_CI_low  <- qgamma(0.025, shape = alphaH, rate = betaH)
++     H_CI_high <- qgamma(0.975, shape = alphaH, rate = betaH)
++   }
++   
++   list(EWA = EWA, EH = EH, H_CI_low = H_CI_low, H_CI_high = H_CI_high)
++ }
+> 
+> get_bnmf <- function (sim) {
++   set.seed(1988)
++   bnmf_out <- NPBayesNMF(sim)
++   
++   ewa <- bnmf_out$EWA
++   eh <- bnmf_out$EH
++   pred <- ewa %*% eh
++   rank = ncol(ewa)
++   
++   list(ewa = ewa, eh = eh, pred = pred, rank = rank)
++ }
+> 
+> output_all <- output_all %>% 
++               mutate(bnmf_out      = map(sim, get_bnmf),
++                      bnmf_scores   = map(bnmf_out, function(x) x[[1]]),
++         [1] "Job Number: 126; Run Number: 1; Iter Number: 100; Iter Score: 38243.6396"
+[1] "Job Number: 126; Run Number: 1; Iter Number: 200; Iter Score: 38533.8149"
+[1] "Job Number: 126; Run Number: 1; Iter Number: 300;[1] "Job Number: 164; Run[1] "Job Number: 126; Run Number: 1; Iter Number: 400;[1] "Job Number: 164; Ru[1] "Job Number: 126; Run Number: 1; Iter Number: 500; [1] "Job Number: 164; Run Number: 1; Iter Number: 300; Iter Score: 34503.0478"
+[1] "Job Number: 164; Run Number: 1; Iter Number: 400; Iter Score: 35545.7174"
+[1] "Job Number: 164; Run Number: 1; Iter Number: 500; Iter[1] "Job Number: 161[1] "Job Number: 164; Run Number: 1; Iter Number: 600; Iter[1] "Job Number: 161[1] "Job Number: 164; Run Number: 1; Iter Number: 700; Iter[1] "Job Number: 161[1] "Job Number: 164; Run Number: 1; Iter Number: 800; Iter[1] "Job Number: 126; Run Number: 2; Iter Number: 100; Iter Score: 39654.5236"
+[1] "Job Number: 126; Run Number: 2; Iter Number: 200; Iter Score: 38402.5745"
+[1] "Job Number: 126; Run Number: 2; Iter Number: 300; Iter Score: 38872.1403"
+[1] "Job Number: 126; Run Number: 2; Iter Number: 400; Iter Score: 39421.4907"
+[1] "Job Number: 126; Run Number: 2; Iter Number: 500; Iter[1] "Job Number: 164[1] "Job Number: 126; Run Number: [1] "Job Number: 20; Run Number: 1; Iter Number: 1700; Iter Score: 34747.9905"
+[1] "Job Number: 20; Run Number: 1; Iter Number: 1800; Iter Score: 34747.9996"
+[1] "Job Number: 20; Run Number: 1; Iter Number: 1900; Iter Score: 34748.0083"
+[1] "Job Number: 20; Run Number: 1; Iter Number: 2000; Iter Score: 34748.0166"
+[1] "Job Number: 20; Run Number: 1; Iter Number: 2100; Iter Score: 34748.0246"
+[1] "Job Number: 20; Run Number: 1; Iter Number: 2200; Iter Score: 34748.0323"
+[1] "Job Number: 20; Run Number: 1; Iter Number: 2300; Iter Score: 34748.0396"
+[1] "Job Number: 20; Run Number: 1; Iter Number: 2400; Iter Score: 34748.0467"
+[1] "Job Number: 20; Run Number: 1; Iter Number: 2500; Iter Score: 34748.0535"
+[1] "Job Number: 20; Run Number: 1; Iter Number: 2600; Iter Score: 34748.06"
+[1][1] "Job Number: 126; Run Number: 3; Iter Number: 700; Iter Score: 3[1] "Job Nu[1] "Job Number: 126; Run Number: 3; Iter Number: 800; Iter Sco[1][1] "Job Number: 161; Run Number: 5; Iter Number[1] "Job Number: 126; Run Number: 4; Iter Number: 100; Iter Score: 40239.6325"
+[1] "Job Number: 126; Run Number: 4; Iter Number: 200; Iter Score: 38279.608"
+[1] "Job Number: 126; Run Number: 4; Iter Number: 300; Iter Score: 38628.4074"
+[1] "Job Number: 126; Run Number: 4; Iter Number: 400; Iter Score: 39330.9141"
+[1] "Job Number: 126; Run Number: 4; Iter Number: 500; Iter Score: 39264.0043"
+[1] "Job Number: 126; Run Number: 4; Iter Number: 600; Iter Score: 39268.9328"
+[1] "Converged in 677 iterations."
+[1] "Job Number: 126; Run Number: 5; Iter Number: 100; Iter Score: 38381.3477"
+[1] "Job Number: 126; Run Number: 5; Iter Number: 200; Iter Score: 38326.3557"
+[1] "Job Number: 126; Run Number: 5; Iter Number: 300; Iter Score: 38926.4639"
+[1] "Job Number: 126; Run Number: 5; Iter Number: 400; Iter Score: 39316.256"
+[1] "Job Number: 126; Run Number: 5; Iter Number: 500; Iter Score: 39278.032"
+[1] "Job Number: 126; Run Number: 5; Iter Number: 600; Iter Score: 39270.7739"
+[1] "Job Number: 126; Run Number: 5; Iter Number: 700; Iter Score: 39269.3497"
+[1] "Job Number: 126; Run Number: 5; Iter Number: 800; Iter Score: 39269.0809"
+[1] "Job Number: 126; Run Number: 5; Iter Number: 900; Iter Score: 39269.0402"
+[1] "Converged in 925 iterations."
+[1] "Job Number: 126; Run Number: 6; Iter Number: 100; Iter Score: 40043.8018"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 200; Iter Score: 38055.1107"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 300; Iter Score: 38413.0914"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 400; Iter Score: 38214.4833"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 500; Iter Score: 38130.4136"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 600; Iter Score: 38972.2891"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 700; Iter Score: 39382.8018"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 800; Iter Score: 39162.0775"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 900; Iter Score: 39235.2956"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 1000; Iter Score: 39262.1228"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 1100; Iter Score: 39267.7668"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 1200; Iter Score: 39268.8812"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 1300; Iter Score: 39269.0944"
+[1] "Job Number: 126; Run Number: 6; Iter Number: 1400; Iter Score: 39269.1281"
+[1] "Converged in 1427 iterations."
+[1] "Job Number: 126; Run Number: 7; Iter Number: 100; Iter Score: 39603.0279"
+[1] "Job Number: 126; Run Number: 7; Iter Number: 200; Iter Score: 38014.7845"
+[1] "Job Number: 126; Run Number: 7; Iter Number: 300; Iter Score: 38046.3785"
+[1] "Job Number: 126; Run Number: 7; Iter Number: 400; Iter Score: 38195.5336"
+[1] "Job Number: 126; Run Number: 7; Iter Number: 500; Iter Score: 38415.7998"
+[1] "Job Number: 126; Run Number: 7; Iter Number: 600; Iter Score: 39392.7484"
+[1] "Job Number: 126; Run Number: 7; Iter Number: 700; Iter Score: 39290.3845"
+[1] "Job Number: 126; Run Number: 7; Iter Number: 800; Iter Score: 39273.2579"
+[1] "Job Number: 126; Run Number: 7; Iter Number: 900; Iter Score: 39269.8786"
+[1] "Job Number: 126; Run Number: 7; Iter Number: 1000; Iter Score: 39269.2113"
+[1] "[1] "Job Number: 69; Run Number: 6; Iter Number: 500; Iter Score: 33823.3658"
+[1] "Job Number: 69; Run Number: 6; Iter Number: 600; Iter Score: 33823.3772"
+[1] "Job Number: 69; Run Number: 6; Iter Number: 700; Iter Score: 33823.3868"
+[1] "Job Number: 69; Run Number: 6; Iter Number: 800; Iter Score: 33823.3948"
+[1] "Job Number: 69; Run Number: 6; Iter Number: 900; Iter Score: 33823.4016"
+[1] "Job Number: 69; Run Number: 6; Iter Number: 1000; Iter Score: 33823.4073"
+[1] "Job Number: 69; Run Number: 6; Iter Number: 1100; Iter Score: 33823.4122"
+[1] "Job Number: 69; Run Number: 6; Iter Number: 1200; Iter Score: 33823.4164"
+[1] "Job Number: 69; Run Number: 6; Iter Number: 1300; Iter Score: 33823.4199"
+[1] "Job Number: 69; Run Number: 6; [1] "Job Number: 126; Run Number[1] "Job Number: 164; Run Number: 7; Iter Numbe[1] "Job Number: 126; Run Number[1] "Job Number: 164; Run Number: 7; Iter Numbe[1] "Converged in 959 iterations[1][1] "Job Number: 126; Run Number: 9; Iter Number: 100; Iter Score: 39344.3701"
+[1] "Job Number: 126; Run Number: 9; Iter Number: 200; Iter Score: 38696.2327"
+[1] "Job Number: 126; Run Number: 9; Iter Number: 300; Iter Score: 39746.3943"
+[1] "Job Number: 126; Run Number: 9; Iter Number: 400; Iter Score: 39391.581"
+[1] "Job Number: 126; Run Number: 9; Iter Number: 500; Iter Score: 39166.8999"
+[1] "Job Number: 126; Run Number: 9; Iter Number: 600; Iter Score: 39200.0022"
+[1] "Job Number: 126; Run Number: 9; Iter Number: 700; Iter Score: 39252.6473"
+[1] "Job Number: 126; Run Number: 9; Iter Number: 800; Iter Score: 39265.7297"
+[1] "Job Number: 126; Run Number: 9; Iter Number: 900; Iter Score: 39268.4044"
+[1] "Job Number: 126; Run Number: 9; Iter Number: 1000; Iter Score: 39268.9529"
+[1] "Job Number: 126; Run Number: 9; Iter Number: 1100; Iter Score: 39269.0673"
+[1] "Job Number: 126; Run Number: 9; Iter Number: 1200; Iter Score: 39269.0908"
+[1] "Converged in 1284 iterations."
+[1] "Job Number: 126; Run Number: 10; Iter Number: 100; Iter Score: 40281.8087"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 200; Iter Score: 37745.989"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 300; Iter Score: 37823.6179"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 400; Iter Score: 37900.2471"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 500; Iter Score: 37952.2668"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 600; Iter Score: 38203.4841"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 700; Iter Score: 38200.045"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 800; Iter Score: 38200.1238"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 900; Iter Score: 38230.9298"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 1000; Iter Score: 38507.4454"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 1100; Iter Score: 39368.3163"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 1200; Iter Score: 39286.7585"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 1300; Iter Score: 39272.5674"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 1400; Iter Score: 39269.7479"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 1500; Iter Score: 39269.1849"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 1600; Iter Score: 39269.0734"
+[1] "Job Number: 126; Run Number: 10; Iter Number: 1700; Iter Score: 39269.0542"
+[1] "Converged in 1744 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   [1] "Job Number: 164; Run Number: 8; Iter Number: 2500; Iter Score: 34793.5442"
+[1] "Job Number: 164; Run Number: 8; Iter Number: 2600; Iter Score: 36085.0729"
+[1] "Job Number: 164; Run Number: 8; Iter Number: 2700; Iter Score: 36381.2452"
+[1] "Job Number: 164; Run Number: 8; Iter Number: 2800; Iter Score: 36298.145"
+[1] "Job Number: 164; Run Number: 8; Iter Number: 2900; Iter Score: 36287.5411"
+[1] "Job Number: 164; Run Number: 8; Iter Number: 3000; Iter Score: 36285.9709"
+[1] "Job Number: 164; Run Number: 8; Iter Number: 3100; Iter Score: 36285.723"
+[1] "Job Number: 164; Run Number: 8; Iter Number: 3200; Iter Score: 36285.6851"
+[1] "Converged in 3284 iterations."
+[1] "Job Number: 164; Run Number: 9; Iter Number: 100; Iter Score: 37726.6522"
+[1] "Job Number: 164; Run Number: 9; Iter Number: 200; Iter Score: 35862.4194"
+[1] "Job Number: 164; Run Number: 9; Iter Number: 300; Iter Score: 35007.7531"
+[1] "Job Number: 164; Run Number: 9; Iter Number: 400; Iter Score: 36018.8813"
+[1] "Job Number: 164; Run Number: 9; Iter Number: 500; Iter Score: 36310.475"
+[1] "Job Number: 164; Run Number: 9; Iter Number: 600; Iter Score: 36343.0303"
+[1] "Job Number: 164; Run Number: 9; Iter Number: 700; Iter Score: 36293.5991"
+[1] "Job Number: 164; Run Number: 9; Iter Number: 800; Iter Score: 36286.8742"
+[1] "Job Number: 164; Run Number: 9; Iter Number: 900; Iter Score: 36285.8523"
+[1] "Job Number: 164; Run Number: 9; Iter Number: 1000; Iter Score: 36285.6932"
+[1] "Job Number: 164; Run Number: 9; Iter Number: 1100; Iter Score: 36285.6716"
+[1] "Converged in 1134 iterations."
+[1] "Job Number: 164; Run Number: 10; Iter Number: 100; Iter Score: 38047.2743"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 200; Iter Score: 36539.3869"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 300; Iter Score: 35450.4678"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 400; Iter Score: 34934.9525"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 500; Iter Score: 34828.6913"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 600; Iter Score: 34781.3376"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 700; Iter Score: 34750.8524"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 800; Iter Score: 34724.8296"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 900; Iter Score: 34700.2837"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 1000; Iter Score: 34676.4527"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 1100; Iter Score: 34654.6164"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 1200; Iter Score: 34635.7121"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 1300; Iter Score: 34620.407"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 1400; Iter Score: 34610.3282"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 1500; Iter Score: 34607.0757"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 1600; Iter Score: 34607.5803"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 1700; Iter Score: 34618.3672"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 1800; Iter Score: 34729.9817"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 1900; Iter Score: 35604.8533"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 2000; Iter Score: 36445.292"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 2100; Iter Score: 36306.2854"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 2200; Iter Score: 36288.6703"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 2300; Iter Score: 36286.1451"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 2400; Iter Score: 36285.7494"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 2500; Iter Score: 36285.6876"
+[1] "Job Number: 164; Run Number: 10; Iter Number: 2600; Iter Score: 36285.6796"
+[1] "Converged in 2609 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   
++   qrU <- qr.Q(qr(U))
++   qrV <- qr.Q(qr(V))
++   
++   m <- ncol(U)
++   n <- ncol(V)
++   
++   dUV <- sqrt( max(m,n) - sum((t(qrU) %*% qrV)^2) )
++   
++   ratio <- dUV/sqrt( max(m,n))
++   
++   ratio
++   
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(pca_norm              = map2(sim, pca_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_uncenter_norm     = map2(sim, pca_uncenter_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          fa_norm               = map2(sim, fa_p[1] "Job Number: 175; Run Number: 10; Iter Number: 1000; Iter Score: 37747.0686[1[1] "Job Number: 175; Run Number:[1] "Job Number: 20; Run Number: 3; Iter Number: 2500; Iter Score: 34748.0536"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 2600; Iter Score: 34748.0601"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 2700; Iter Score: 34748.0664"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 2800; Iter Score: 34748.0724"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 2900; Iter Score: 34748.0782"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 3000; Iter Score: 34748.0838"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 3100; Iter Score: 34748.0891"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 3200; Iter Score: 34748.0942"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 3300; Iter Score: 34748.0992"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 3400; Iter Score: 34748.1039"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 3500; Iter Score: 34748.1085"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 3600; Iter Score: 34748.1129"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 3700; Iter Score: 34748.1171"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 3800; Iter Score: 34748.1212"
+[1] "Job Number: 20; Run Number: 3; Iter Number: 3900; Iter Score: 34748.1251"
+[1[1] "Job Number: 112; Run Number: 9; Iter Number: 800; Iter Score: 36393.91[1] [1] "Job Number: 112; Run Number: 9; Iter Number: 900; Iter Score: 36355.54[1] [1] "Job Number: 112; Run Number: 9; Iter Number: 1000; Iter Score: 36345.9[1] "[1] "Job Number: 112; Run Number: 9; Iter Number: 1100; Iter Score: 36345.[1] "J[1] "Job Number: 112; Run Number: 9; Iter Number: 1200; Iter Score: 36346[1] "Jo[1] "Job Number: 112; Run Number: 9; Iter Number: 1300; Iter Scor[1] "Job Number[1] "Job Number: 112; Run Number: 9; Iter Number: 1400; Iter Sco[1] "Job Number: 154; Run Number: 6; Iter Number: 200; Iter Score: 38924.5346"
+[1] "Job Number: 154; Run Number: 6; Iter Num[1] "Job Number: 189; Run Number: 10; Iter Number: 100; Iter Score: 38051.04"
+[1] "Job Number: 189; Run Number: 10; Iter Number: 200; Iter Score: 37513.664"
+[1] "Job Number: 189; Run Number: 10; Iter Number: 300; Iter Score: 37513.4326"
+[1] "Job Number: 189; Run Number: 10; Iter Number: 400; Iter Score: 38034.9191"
+[1] "Job Number: 189; Run Number: 10; Iter Number: 500; Iter Score: 38911.7749"
+[1] "Job Number: 189; Run Number: 10; Iter Number: 600; Iter Score: 39871.6471"
+[1] "Job Number: 189; Run Number: 10; Iter Number: 700; Iter Score: 39872.0537"
+[1] "Converged in 731 iterations."
+> 
+> ###############################
+> # Symmetric Subs[1] "Job Number: 112; Run Number: 10; Iter Number: 300; Iter Score: 35619.6121"
+[1] "Job Number: 112; Run Number: 10; Iter Number: 400; Iter Score: 36027.9514"
+[1] "Job Number: 112; Run Number: 10; Iter Number: 500; Iter Score: 36318.8591"
+[1] "Job Number: 112; Run Number: 10; Iter Number: 600; Iter Score: 35807.6631"
+[1] "Job Number: 112; Run Number: 10; Iter Number: 700; Iter Score: 35797.5396"
+[1] "Job Number: 112; Run Number: 10; Iter Number: 800; Iter Score: 35824.7248"
+[1] "Job Number: 112; Run Number: 10; Iter Number: 900; Iter Score: 36119.5445"
+[1] "Job Number: 112; Run Number: 10; Iter Number: 1000; Iter Score: 36471.6958"
+[1] "Job Number: 112; Run Number: 10; Iter Number: 1100;[1] "Job Number: 154; Run Number: 7; Iter Number: 100; Iter Score: 39888.4757"
+[1] "Job Number: 154; Run Number: 7; Iter Number: 200; Iter Score: 39328.7723"
+[1] "Job Number: 154; Run Number: 7; Iter Number: 300; Iter Score: 38997.1972"
+[1] "Job Number: 154; Run Number: 7; Iter Number: 400; Iter Score: 38995.5758"
+[1] "Job Number: 154; Run Number: 7; Iter Number: 500; Iter Score: 39137.5942"
+[1] "Job Number: 154; Run Number: 7; Iter Number: 600; Iter Score: 39338.8622"
+[1] "Job Number: 154; Run Number: 7; Iter Number: 700; Iter Score: 39277.1983"
+[1] "Job Number: 154; Run Number: 7; Iter Number: 800; Iter Score: 39267.8686"
+[1] "Job Number: 154; Run Number: 7; Iter Number: 900; Iter Score: 39265.2308"
+[1] "Job Number: 154; Run Number: 7; Iter Number: 1000; Iter Score: 39264.4[1] "Job Number: 20; Run Number: 4; Iter Number: 100; Iter Score: 35455.9991"
+[1] "Job Number: 20; Run Number: 4; Iter Number: 200; Iter Score: 34767.0387"
+[1] "Job Number: 20; Run Number: 4; Iter Number: 300; Iter Score: 34745.8702"
+[1] "Job Number: 20; Run Number: 4; Iter Number: 400; Iter Score: 34747.502"
+[1] "Job Number: 20; Run Number: 4; Iter Number: 500; Iter Score: 34747.7366"
+[1] "Job Number: 20; Run Number: 4; Iter Number: 600; Iter Score: 34747.8176"
+[1] "Job Number: 20; Run Number: 4; Iter Number: 700; Iter Score: 34747.8569"
+[1] "Job Number: 20; Run Number: 4; Iter Number: 800; Iter Score: 34747.8809"
+[1] "Job Number: 20; Run Number: 4; Iter Number: 900; Iter Score: 34747.8986"
+[1] "Job Number: 20; Run Number: 4; Iter Number: 10[1] "Job Number: 154; Run Number: 8; Iter Number: 800; Iter Score: 39218.8767"
+[1] "Job Number: 154; Run Number: 8; Iter Number: 900; Iter Score: 39249.0238"
+[1] "Job Number: 154; Run Number: 8; Iter Number: 1000; Iter Score: 39259.0872"
+[1] "Job Number: 154; Run Number: 8; Iter Number: 1100; Iter Score: 39262.4257"
+[1] "Job Number: 154; Run Number: 8; Iter Number: 1200; Iter Score: 39263.5743"
+[1] "Job Number: 154; Run Number: 8; Iter Number: 1300; Iter Score: 39263.9836"
+[1] "Job Number: 154; Run Number: 8; Iter Number: 1400; Iter Score: 39264.1323"
+[1] "Job Number: 154; Run Number: 8; Iter Number: 1500; Iter Score: 39264.1859"
+[1] "Job Number: 154; Run Number: 8; Iter Number: 1600; Iter Score: 39264.2036"
+[1] "Converged in 1687 iterations."
+[1] "Job Number: 154; Run Number: 9; Iter Number: 100; Iter Score: 40093.8698"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 200; Iter Score: 38806.9285"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 300; Iter Score: 38524.2864"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 400; Iter Score: 38635.2098"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 500; Iter Score: 39259.33"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 600; Iter Score: 39101.7481"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 700; Iter Score: 39210.7543"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 800; Iter Score: 39138.5552"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 900; Iter Score: 39098.8847"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 1000; Iter Score: 39071.0665"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 1100; Iter Score: 39147.9117"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 1200; Iter Score: 39219.3142"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 1300; Iter Score: 39249.2418"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 1400; Iter Score: 39259.2496"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 1500; Iter Score: 39262.5577"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 1600; Iter Score: 39263.677"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 1700; Iter Score: 39264.0604"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 1800; Iter Score: 39264.1879"
+[1] "Job Number: 154; Run Number: 9; Iter Number: 1900; Iter Score: 39264.2247"
+[1] "Converged in 1970 iterations."
+[1] "Job Number: 154; Run Number: 10; Iter Number: 100; Iter Score: 39867.5643"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 200; Iter Score: 38790.8069"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 300; Iter Score: 39052.1473"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 400; Iter Score: 39212.727"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 500; Iter Score: 39416.6851"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 600; Iter Score: 39766.1031"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 700; Iter Score: 40720.6898"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 800; Iter Score: 40034.4305"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 900; Iter Score: 39693.4549"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 1000; Iter Score: 39647.7205"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 1100; Iter Score: 39628.5857"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 1200; Iter Score: 39554.908"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 1300; Iter Score: 39415.2321"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 1400; Iter Score: 39197.4838"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 1500; Iter Score: 39129.1268"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 1600; Iter Score: 39118.4961"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 1700; Iter Score: 39063.0826"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 1800; Iter Score: 39109.4011"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 1900; Iter Score: 39195.9699"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 2000; Iter Score: 39240.7777"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 2100; Iter Score: 39256.5903"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 2200; Iter Score: 39261.7635"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 2300; Iter Score: 39263.4712"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 2400; Iter Score: 39264.0363"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 2500; Iter Score: 39264.2129"
+[1] "Job Number: 154; Run Number: 10; Iter Number: 2600; Iter Score: 39264.256"
+[1] "Converged in 2635 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   
++   qrU <- qr.Q(qr(U))
++   qrV <- qr.Q(qr(V))
++   
++   m <- ncol(U)
++   n <- ncol(V)
++   
++   dUV <- sqrt( max(m,n) - sum((t(qrU) %*% qrV)^2) )
++   
++   ratio <- dUV/sqrt( max(m,n))
++   
++   ratio
++   
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(pca_norm              = map2(sim, pca_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_uncenter_norm     = map2(sim, pca_uncenter_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          fa_norm               = map2(sim, fa_pred,     function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_l2_norm           = map2(sim, nmf_l2_pred, function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_p_norm            = map2(sim, nmf_p_pred,  function(x,y) norm(x-y, "F")/norm(x, "F")),
++          bnmf_norm             = map2(sim, bnmf_pred,[1] "Job Number: 152; Run Number: 10; Iter Number: 300; Iter Score: 38934.0014"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 400; Iter Score: 39227.5721"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 500; Iter Score: 39346.6596"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 600; Iter Score: 39403.5033"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 700; Iter Score: 39433.6063"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 800; Iter Score: 39450.7478"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 900; Iter Score: 39461.0014"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 1000; Iter Score: 39467.2385"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 1100; Iter Score: 39471.0256"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 1200; Iter Score: 39473.301"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 1300; Iter Score: 39474.6517"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 1400; Iter Score: 39475.4405"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 1500; Iter Score: 39475.8907"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 1600; Iter Score: 39476.139"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 1700; Iter Score: 39476.268"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 1800; Iter Score: 39476.3274"
+[1] "Job Number: 152; Run Number: 10; Iter Number: 1900; Iter Score: 39476.3466"
+[1] "Converged in 1924 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   
++   qrU <- qr.Q(qr(U))
++   qrV <- qr.Q(qr(V))
++   
++   m <- ncol(U)
++   n <- ncol(V)
++   
++   dUV <- sqrt( max(m,n) - sum((t(qrU) %*% qrV)^2) )
++   
++   ratio <- dUV/sqrt( max(m,n))
++   
++   ratio
++   
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(pca_norm              = map2(sim, pca_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_uncen[1] "Job Number: 20; Run Number: 5; Iter Number: 3200; Iter Score: 34748.0944"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 3300; Iter Score: 34748.0993"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 3400; Iter Score: 34748.1041"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 3500; Iter Score: 34748.1086"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 3600; Iter Score: 34748.113"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 3700; Iter Score: 34748.1172"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 3800; Iter Score: 34748.1213"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 3900; Iter Score: 34748.1252"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 4000; Iter Score: 34748.1289"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 4100; Iter Score: 34748.1325"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 4200; Iter Score: 34748.136"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 4300; Iter Score: 34748.1393"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 4400; Iter Score: 34748.1425"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 4500; Iter Score: 34748.1456"
+[1] "Job Number: 20; Run Number: 5; Iter Number: 4600; Iter Score: 34748.1486"
+[1[1] "Job Number: 35; Run Number: 10; Iter Number: 100; Iter Score: 36131.0384"
+[1] "Job Number: 35; Run Number: 10; Iter Number: 200; Iter Score: 36146.36"
+[1] "Job Number: 35; Run Number: 10; Iter Number: 300; Iter Score: 36146.5822"
+[1] "Job Number: 35; Run Number: 10; Iter Number: 400; Iter Score: 36146.6264"
+[1] "Job Number: 35; Run Number: 10; Iter Number: 500; Iter Score: 36146.6532"
+[1] "Job Number: 35; Run Number: 10; Iter Number: 600; Iter Score: 36146.6762"
+[1] "Job Number: 35; Run Number: 10; Iter Number: 700; Iter Score: 36146.6967"
+[1] "Job Number: 35; Run Number: 10; Iter Number: 800; Iter Score: 36146.7151"
+[1] "Job Number: 35; Run Number: 10; Iter Number: 900; Iter Score: 36146.7317"
+[1] "Job Number: 35; Run Number: 10; Iter Number: 1000; Iter Score: 36146.7466"
+[1] "Job Number: 35; Run Number: 1[1] "Job Number: 196; Run Number: 6; Iter Number: 200; Iter Score: 40320.0027"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 300; Iter Score: 41082.3644"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 400; Iter Score: 40970.9565"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 500; Iter Score: 40914.2241"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 600; Iter Score: 40842.0097"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 700; Iter Score: 40725.9875"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 800; Iter Score: 40496.5995"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 900; Iter Score: 40079.0705"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 1000; Iter Score: 39712.9454"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 1100; Iter Score: 39586.5895"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 1200; Iter Score: 39469.2796"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 1300; Iter Score: 39360.5365"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 1400; Iter Score: 39414.3523"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 1500; Iter Score: 39517.8235"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 1600; Iter Score: 39558.2624"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 1700; Iter Score: 39569.2034"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 1800; Iter Score: 39572.3369"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 1900; Iter Score: 39573.3791"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 2000; Iter Score: 39573.7573"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 2100; Iter Score: 39573.8958"
+[1] "Job Number: 196; Run Number: 6; Iter Number: 2200; Iter Score: 39573.9402"
+[1] "Converged in 2275 iterations."
+[1] "Job Number: 196; Run Number: 7; Iter Number: 100; Iter Score: 40891.4623"
+[1] "Job Number: 196; Run Number: 7; Iter Number: 200; Iter Score: 39312.6004"
+[1] "Job Number: 196; Run Number: 7; Iter Number: 300; Iter Score: 39255.9579"
+[1] "Job Number: 196; Run Number: 7; Iter Number: 400; Iter Score: 39235.3112"
+[1] "Job Number: 196[1] "Job Number: 20; Run Number: 6; Iter Number: 900; Iter Score: 34747.8994"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 1000; Iter Score: 34747.9138"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 1100; Iter Score: 34747.9268"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 1200; Iter Score: 34747.9388"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 1300; Iter Score: 34747.9503"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 1400; Iter Score: 34747.9611"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 1500; Iter Score: 34747.9714"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 1600; Iter Score: 34747.9813"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 1700; Iter Score: 34747.9908"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 1800; Iter Score: 34747.9998"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 1900; Iter Score: 34748.0085"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 2000; Iter Score: 34748.0168"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 2100; Iter Score: 34748.0248"
+[1] "Job Number: 20; Run Number: 6; Iter Number: 2200; Iter Score: 34748.0325"
+[1] "Job Number: 20; Run [1] "Job Number: 196; Run Number: 8; Iter Number: 100; Iter Score: 40791.7786"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 200; Iter Score: 39150.673"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 300; Iter Score: 38935.6219"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 400; Iter Score: 38967.6968"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 500; Iter Score: 40576.5375"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 600; Iter Score: 40457.4624"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 700; Iter Score: 39881.1203"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 800; Iter Score: 39612.5689"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 900; Iter Score: 39539.1281"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 1000; Iter Score: 39497.3601"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 1100; Iter Score: 39386.7128"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 1200; Iter Score: 39348.8623"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 1300; Iter Score: 39461.1614"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 1400; Iter Score: 39539.3863"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 1500; Iter Score: 39563.8944"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 1600; Iter Score: 39570.6103"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 1700; Iter Score: 39572.7245"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 1800; Iter Score: 39573.4835"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 1900; Iter Score: 39573.7753"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 2000; Iter Score: 39573.887"
+[1] "Job Number: 196; Run Number: 8; Iter Number: 2100; Iter Score: 39573.9248"
+[1] "Converged in 2183 iterations."
+[1] "Job Number: 196; Run Number: 9; Iter Number: 100; Iter Score: 41010.3391"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 200; Iter Score: 39539.061"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 300; Iter Score: 39121.7037"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 400; Iter Score: 38979.3101"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 500; Iter Score: 39085.0419"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 600; Iter Score: 39226.7743"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 700; Iter Score: 39298.7171"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 800; Iter Score: 39332.0472"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 900; Iter Score: 39467.9603"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 1000; Iter Score: 40385.7964"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 1100; Iter Score: 39699.7599"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 1200; Iter Score: 39614.5953"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 1300; Iter Score: 39590.7917"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 1400; Iter Score: 39581.5773"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 1500; Iter Score: 39577.5421"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 1600; Iter Score: 39575.6463"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 1700; Iter Score: 39574.73"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 1800; Iter Score: 39574.2811"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 1900; Iter Score: 39574.0583"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 2000; Iter Score: 39573.9462"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 2100; Iter Score: 39573.8891"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 2200; Iter Score: 39573.8593"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 2300; Iter Score: 39573.8431"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 2400; Iter Score: 39573.8337"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 2500; Iter Score: 39573.8276"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 2600; Iter Score: 39573.8229"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 2700; Iter Score: 39573.8189"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 2800; Iter Score: 39573.8151"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 2900; Iter Score: 39573.8112"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 3000; Iter Score: 39573.8073"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 3100; Iter Score: 39573.8032"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 3200; Iter Score: 39573.799"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 3300; Iter Score: 39573.7946"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 3400; Iter Score: 39573.7902"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 3500; Iter Score: 39573.7856"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 3600; Iter Score: 39573.781"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 3700; Iter Score: 39573.7763"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 3800; Iter Score: 39573.7716"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 3900; Iter Score: 39573.7669"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 4000; Iter Score: 39573.7622"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 4100; Iter Score: 39573.7574"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 4200; Iter Score: 39573.7527"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 4300; Iter Score: 39573.748"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 4400; Iter Score: 39573.7433"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 4500; Iter Score: 39573.7387"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 4600; Iter Score: 39573.734"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 4700; Iter Score: 39573.7295"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 4800; Iter Score: 39573.7249"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 4900; Iter Score: 39573.7204"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 5000; Iter Score: 39573.7159"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 5100; Iter Score: 39573.7115"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 5200; Iter Score: 39573.7072"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 5300; Iter Score: 39573.7029"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 5400; Iter Score: 39573.6986"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 5500; Iter Score: 39573.6944"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 5600; Iter Score: 39573.6902"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 5700; Iter Score: 39573.6861"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 5800; Iter Score: 39573.6821"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 5900; Iter Score: 39573.6781"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 6000; Iter Score: 39573.6741"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 6100; Iter Score: 39573.6702"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 6200; Iter Score: 39573.6664"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 6300; Iter Score: 39573.6626"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 6400; Iter Score: 39573.6589"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 6500; Iter Score: 39573.6552"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 6600; Iter Score: 39573.6516"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 6700; Iter Score: 39573.648"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 6800; Iter Score: 39573.6445"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 6900; Iter Score: 39573.6411"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 7000; Iter Score: 39573.6377"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 7100; Iter Score: 39573.6343"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 7200; Iter Score: 39573.631"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 7300; Iter Score: 39573.6277"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 7400; Iter Score: 39573.6245"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 7500; Iter Score: 39573.6214"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 7600; Iter Score: 39573.6183"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 7700; Iter Score: 39573.6152"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 7800; Iter Score: 39573.6122"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 7900; Iter Score: 39573.6092"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 8000; Iter Score: 39573.6063"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 8100; Iter Score: 39573.6035"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 8200; Iter Score: 39573.6006"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 8300; Iter Score: 39573.5979"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 8400; Iter Score: 39573.5951"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 8500; Iter Score: 39573.5924"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 8600; Iter Score: 39573.5898"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 8700; Iter Score: 39573.5872"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 8800; Iter Score: 39573.5846"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 8900; Iter Score: 39573.5821"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 9000; Iter Score: 39573.5796"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 9100; Iter Score: 39573.5772"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 9200; Iter Score: 39573.5748"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 9300; Iter Score: 39573.5724"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 9400; Iter Score: 39573.5701"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 9500; Iter Score: 39573.5678"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 9600; Iter Score: 39573.5656"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 9700; Iter Score: 39573.5634"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 9800; Iter Score: 39573.5612"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 9900; Iter Score: 39573.5591"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 10000; Iter Score: 39573.557"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 10100; Iter Score: 39573.5549"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 10200; Iter Score: 39573.5529"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 10300; Iter Score: 39573.5509"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 10400; Iter Score: 39573.549"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 10500; Iter Score: 39573.547"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 10600; Iter Score: 39573.5452"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 10700; Iter Score: 39573.5433"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 10800; Iter Score: 39573.5415"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 10900; Iter Score: 39573.5397"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 11000; Iter Score: 39573.5379"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 11100; Iter Score: 39573.5362"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 11200; Iter Score: 39573.5345"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 11300; Iter Score: 39573.5328"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 11400; Iter Score: 39573.5312"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 11500; Iter Score: 39573.5296"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 11600; Iter Score: 39573.528"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 11700; Iter Score: 39573.5264"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 11800; Iter Score: 39573.5249"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 11900; Iter Score: 39573.5234"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 12000; Iter Score: 39573.5219"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 12100; Iter Score: 39573.5205"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 12200; Iter Score: 39573.5191"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 12300; Iter Score: 39573.5177"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 12400; Iter Score: 39573.5163"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 12500; Iter Score: 39573.5149"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 12600; Iter Score: 39573.5136"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 12700; Iter Score: 39573.5123"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 12800; Iter Score: 39573.511"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 12900; Iter Score: 39573.5098"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 13000; Iter Score: 39573.5085"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 13100; Iter Score: 39573.5073"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 13200; Iter Score: 39573.5061"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 13300; Iter Score: 39573.505"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 13400; Iter Score: 39573.5038"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 13500; Iter Score: 39573.5027"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 13600; Iter Score: 39573.5016"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 13700; Iter Score: 39573.5005"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 13800; Iter Score: 39573.4995"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 13900; Iter Score: 39573.4984"
+[1] "Job Number: 196; Run Number: 9; Iter Number: 14000; Iter Score: 39573.4974"
+[1] "Converged in 14090 iterations."
+[1] "Job Number: 196; Run Number: 10; Iter Number: 100; Iter Score: 40407.0188"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 200; Iter Score: 38760.3195"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 300; Iter Score: 38759.0467"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 400; Iter Score: 38972.9033"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 500; Iter Score: 39180.9021"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 600; Iter Score: 39546.3334"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 700; Iter Score: 39817.1346"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 800; Iter Score: 39579.191"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 900; Iter Score: 39538.6238"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 1000; Iter Score: 39539.3782"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 1100; Iter Score: 39556.7206"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 1200; Iter Score: 39585.9195"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 1300; Iter Score: 39627.8774"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 1400; Iter Score: 39685.206"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 1500; Iter Score: 39766.5671"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 1600; Iter Score: 39887.2249"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 1700; Iter Score: 40086.2242"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 1800; Iter Score: 40471.2954"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 1900; Iter Score: 41711.4035"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 2000; Iter Score: 42102.8494"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 2100; Iter Score: 41656.5923"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 2200; Iter Score: 41403.1665"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 2300; Iter Score: 41238.5926"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 2400; Iter Score: 41147.8891"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 2500; Iter Score: 41110.3431"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 2600; Iter Score: 41092.4645"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 2700; Iter Score: 41070.5399"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 2800; Iter Score: 41037.3478"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 2900; Iter Score: 40987.0712"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 3000; Iter Score: 40907.274"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 3100; Iter Score: 40770.4833"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 3200; Iter Score: 40503.2933"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 3300; Iter Score: 40049.5605"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 3400; Iter Score: 39701.4853"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 3500; Iter Score: 39581.1994"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 3600; Iter Score: 39450.1506"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 3700; Iter Score: 39357.6006"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 3800; Iter Score: 39436.6169"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 3900; Iter Score: 39529.6078"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 4000; Iter Score: 39562.1305"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 4100; Iter Score: 39570.6991"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 4200; Iter Score: 39573.1346"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 4300; Iter Score: 39573.8985"
+[1] "Job Number: 196; Run Number: 10; Iter Number: 4400; Iter Score: 39574.1302"
+[1] "Converged in 4497 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   
++   qrU <- qr.Q(qr(U))
++   qrV <- qr.Q(qr(V))
++   
++   m <- ncol(U)
++   n <- ncol(V)
++   
++   dUV <- sqrt( max(m,n) - sum((t(qrU) %*% qrV)^2) )
++   
++   ratio <- dUV/sqrt( max(m,n))
++   
++   ratio
++   
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(pca_norm              = map2(sim, pca_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_uncenter_norm     = map2(sim, pca_uncenter_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          fa_norm               = map2(sim, fa_pred,     function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_l2_norm           = map2(sim, nmf_l2_pred, function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_p_norm            = map2(sim, nmf_p_pred,  function(x,y) norm(x-y, "F")/norm(x, "F")),
++          bnmf_norm             = map2(sim, bnmf_pred,   function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_rotation_ssdist   = map2(true_patterns, pca_rotations,   symm_subspace_dist),
++          pca_scores_ssdist     = map2(true_scores,   pca_scores,      symm_subspace_dist),
++          pca_uncenter_rotation_ssdist   = map2(true_patterns, pca_unce[1] "Job Number: 167; Run Number: 9; Iter Number: 100; Iter Score: 37078.9094"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 200; Iter Score: 37499.2073"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 300; Iter Score: 37673.6571"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 400; Iter Score: 37380.5715"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 500; Iter Score: 37394.9745"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 600; Iter Score: 37402.8276"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 700; Iter Score: 37482.4963"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 800; Iter Score: 37504.7664"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 900; Iter Score: 37505.7532"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 1000; Iter Score: 37504.5987"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 1100; Iter Score: 37503.8047"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 1200; Iter Score: 37503.3894"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 1300; Iter Score: 37503.1923"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 1400; Iter Score: 37503.1008"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 1500; Iter Score: 37503.057"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 1600; Iter Score: 37503.0341"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 1700; Iter Score: 37503.0204"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 1800; Iter Score: 37503.0107"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 1900; Iter Score: 37503.0027"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 2000; Iter Score: 37502.9956"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 2100; Iter Score: 37502.9889"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 2200; Iter Score: 37502.9825"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 2300; Iter Score: 37502.9762"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 2400; Iter Score: 37502.9701"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 2500; Iter Score: 37502.9642"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 2600; Iter Score: 37502.9584"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 2700; Iter Score: 37502.9528"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 2800; Iter Score: 37502.9473"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 2900; Iter Score: 37502.9419"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 3000; Iter Score: 37502.9367"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 3100; Iter Score: 37502.9317"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 3200; Iter Score: 37502.9268"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 3300; Iter Score: 37502.922"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 3400; Iter Score: 37502.9174"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 3500; Iter Score: 37502.9129"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 3600; Iter Score: 37502.9086"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 3700; Iter Score: 37502.9044"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 3800; Iter Score: 37502.9004"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 3900; Iter Score: 37502.8965"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 4000; Iter Score: 37502.8927"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 4100; Iter Score: 37502.889"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 4200; Iter Score: 37502.8855"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 4300; Iter Score: 37502.8821"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 4400; Iter Score: 37502.8788"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 4500; Iter Score: 37502.8757"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 4600; Iter Score: 37502.8726"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 4700; Iter Score: 37502.8696"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 4800; Iter Score: 37502.8668"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 4900; Iter Score: 37502.864"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 5000; Iter Score: 37502.8614"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 5100; Iter Score: 37502.8588"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 5200; Iter Score: 37502.8564"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 5300; Iter Score: 37502.854"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 5400; Iter Score: 37502.8517"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 5500; Iter Score: 37502.8495"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 5600; Iter Score: 37502.8473"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 5700; Iter Score: 37502.8453"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 5800; Iter Score: 37502.8433"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 5900; Iter Score: 37502.8414"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 6000; Iter Score: 37502.8396"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 6100; Iter Score: 37502.8378"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 6200; Iter Score: 37502.8361"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 6300; Iter Score: 37502.8344"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 6400; Iter Score: 37502.8328"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 6500; Iter Score: 37502.8313"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 6600; Iter Score: 37502.8298"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 6700; Iter Score: 37502.8284"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 6800; Iter Score: 37502.827"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 6900; Iter Score: 37502.8257"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 7000; Iter Score: 37502.8244"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 7100; Iter Score: 37502.8232"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 7200; Iter Score: 37502.822"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 7300; Iter Score: 37502.8209"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 7400; Iter Score: 37502.8198"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 7500; Iter Score: 37502.8187"
+[1] "Job Number: 167; Run Number: 9; Iter Number: 7600; Iter Score: 37502.8177"
+[1] "Converged in 7608 iterations."
+[1] "Job Number: 167; Run Number: 10; Iter Number: 100; Iter Score: 37348.0829"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 200; Iter Score: 37127.0381"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 300; Iter Score: 37365.2146"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 400; Iter Score: 38068.5814"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 500; Iter Score: 38332.5251"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 600; Iter Score: 37500.3278"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 700; Iter Score: 37363.4638"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 800; Iter Score: 37327.7967"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 900; Iter Score: 37307.6053"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 1000; Iter Score: 37303.3903"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 1100; Iter Score: 37302.5908"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 1200; Iter Score: 37303.3952"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 1300; Iter Score: 37313.172"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 1400; Iter Score: 37361.4683"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 1500; Iter Score: 37449.7717"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 1600; Iter Score: 37458.0964"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 1700; Iter Score: 37505.7577"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 1800; Iter Score: 37523.71"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 1900; Iter Score: 37515.2147"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 2000; Iter Score: 37508.7654"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 2100; Iter Score: 37505.5196"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 2200; Iter Score: 37504.0675"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 2300; Iter Score: 37503.4327"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 2400; Iter Score: 37503.1579"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 2500; Iter Score: 37503.0382"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 2600; Iter Score: 37502.9845"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 2700; Iter Score: 37502.9591"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 2800; Iter Score: 37502.9457"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 2900; Iter Score: 37502.9375"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 3000; Iter Score: 37502.9316"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 3100; Iter Score: 37502.9267"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 3200; Iter Score: 37502.9224"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 3300; Iter Score: 37502.9183"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 3400; Iter Score: 37502.9144"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 3500; Iter Score: 37502.9106"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 3600; Iter Score: 37502.9069"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 3700; Iter Score: 37502.9032"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 3800; Iter Score: 37502.8996"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 3900; Iter Score: 37502.8961"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 4000; Iter Score: 37502.8927"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 4100; Iter Score: 37502.8894"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 4200; Iter Score: 37502.8861"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 4300; Iter Score: 37502.8829"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 4400; Iter Score: 37502.8798"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 4500; Iter Score: 37502.8768"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 4600; Iter Score: 37502.8739"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 4700; Iter Score: 37502.871"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 4800; Iter Score: 37502.8682"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 4900; Iter Score: 37502.8656"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 5000; Iter Score: 37502.8629"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 5100; Iter Score: 37502.8604"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 5200; Iter Score: 37502.858"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 5300; Iter Score: 37502.8556"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 5400; Iter Score: 37502.8533"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 5500; Iter Score: 37502.8511"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 5600; Iter Score: 37502.849"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 5700; Iter Score: 37502.8469"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 5800; Iter Score: 37502.8449"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 5900; Iter Score: 37502.843"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 6000; Iter Score: 37502.8411"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 6100; Iter Score: 37502.8393"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 6200; Iter Score: 37502.8375"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 6300; Iter Score: 37502.8358"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 6400; Iter Score: 37502.8342"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 6500; Iter Score: 37502.8327"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 6600; Iter Score: 37502.8311"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 6700; Iter Score: 37502.8297"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 6800; Iter Score: 37502.8283"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 6900; Iter Score: 37502.8269"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 7000; Iter Score: 37502.8256"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 7100; Iter Score: 37502.8243"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 7200; Iter Score: 37502.8231"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 7300; Iter Score: 37502.822"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 7400; Iter Score: 37502.8208"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 7500; Iter Score: 37502.8197"
+[1] "Job Number: 167; Run Number: 10; Iter Number: 7600; Iter Score: 37502.8187"
+[1] "Converged in 7695 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   
++   qrU <- qr.Q(qr(U))
++   qrV <- qr.Q(qr(V))
++   
++   m <- ncol(U)
++   n <- ncol(V)
++   
++   dUV <- sqrt( max(m,n) - sum((t(qrU) %*% qrV)^2) )
++   
++   ratio <- dUV/sqrt( max(m,n))
++   
++   ratio
++   
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(pca_norm              = map2(sim, pca_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_uncenter_norm     = map2(sim, pca_uncenter_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          fa_norm               = map2(sim, fa_pred,     function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_l2_norm           = map2(sim, nmf_l2_pred, function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_p_norm            = map2(sim, nmf_p_pred,  function(x,y) norm(x-y, "F")/norm(x, "F")),
++          bnmf_norm             = map2(sim, bnmf_pred,   function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_rotation_ssdist   = map2(true_patterns, pca_rotations,   symm_subspace_dist),
++          pca_scores_ssdist     = map2(true_scores,   pca_scores,      symm_subspace_dist),
++          pca_uncenter_rotation_ssdist   = map2(true_patterns, pca_uncenter_rotations,   symm_subspace_dist),
++          pca_uncenter_scores_ssdist     = map2(true_scores,   pca_uncenter_scores,      symm_subspace_dist),
++          fa_rotations_ssdist   = map2(true_patterns, fa_rotations,    symm_subspace_dist),
++          fa_scores_ssdist      = map2(true_scores,   fa_scores,       symm_subspace_dist),
++          nmf_l2_loading_ssdist = map2(true_patterns, nmf_l2_loadings, symm_subspace_dist),
++          nmf_l2_scores_ssdist  = map2(true_scores,   nmf_l2_scores,   symm_subspace_dist),
++          nmf_p_loading_ssdist  = map2(true_patterns, nmf_p_loadings,  symm_subspace_dist),
++          nmf_p_scores_ssdist   = map2(true_scores,   nmf_p_scores,    symm_subspace_dist),
++          bnmf_loading_ssdist   = map2(true_patterns, bnmf_loadings,   symm_subspace_dist),
++          bnmf_scores_ssdist    = map2(true_scores,   bnmf_scores,     symm_subspace_dist))
+> 
+> #####
+> # Save
+> #####
+>                            
+> output_all <- output_all %>% dplyr::select(-grep("_out", colnames(.)))
+> 
+> save(output_all, file = paste0("/ifs/scratch/msph/ehs/eag2186/npbnmf/raw_out/raw_sims", job_num, ".RDA"))
+> 
+> proc.time()
+     user    system   elapsed 
+19471.356    96.601 20116.153 
+2.4393"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 5900; Iter Score: 39152.4286"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 6000; Iter Score: 39152.418"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 6100; Iter Score: 39152.4075"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 6200; Iter Score: 39152.3972"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 6300; Iter Score: 39152.387"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 6400; Iter Score: 39152.377"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 6500; Iter Score: 39152.3671"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 6600; Iter Score: 39152.3573"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 6700; Iter Score: 39152.3476"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 6800; Iter Score: 39152.3381"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 6900; Iter Score: 39152.3287"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 7000; Iter Score: 39152.3194"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 7100; Iter Score: 39152.3102"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 7200; Iter Score: 39152.3012"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 7300; Iter Score: 39152.2922"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 7400; Iter Score: 39152.2834"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 7500; Iter Score: 39152.2747"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 7600; Iter Score: 39152.2661"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 7700; Iter Score: 39152.2576"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 7800; Iter Score: 39152.2493"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 7900; Iter Score: 39152.241"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 8000; Iter Score: 39152.2328"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 8100; Iter Score: 39152.2248"
+[[1] "Job Number: 88; Run Number: 6; Iter Number: 2100; Iter Score: 34291.5128"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 2200; Iter Score: 34291.524"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 2300; Iter Score: 34291.5349"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 2400; Iter Score: 34291.5456"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 2500; Iter Score: 34291.556"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 2600; Iter Score: 34291.5662"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 2700; Iter Score: 34291.5761"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 2800; Iter Score: 34291.5858"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 2900; Iter Score: 34291.5954"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 3000; Iter Score: 34291.6047"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 3100; Iter Score: 34291.6138"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 3200; Iter Score: 34291.6227"
+[1]52.136"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 9400; Iter Score: 39152.1292"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 9500; Iter Score: 39152.1225"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 9600; Iter Score: 39152.1159"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 9700; Iter Score: 39152.1094"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 9800; Iter Score: 39152.1029"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 9900; Iter Score: 39152.0966"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 10000; Iter Score: 39152.0903"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 10100; Iter Score: 39152.0841"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 10200; Iter Score: 39152.078"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 10300; Iter Score: 39152.0719"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 10400; Iter Score: 39152.066"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 10500; Iter Score: 39152.0601"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 10600; Iter Score: 39152.0543"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 10700; Iter Score: 39152.0486"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 10800; Iter Score: 39152.0429"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 10900; Iter Score: 39152.0374"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 11000; Iter Score: 39152.0319"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 11100; Iter Score: 39152.0264"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 11200; Iter Score: 39152.0211"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 11300; Iter Score: 39152.0158"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 11400; Iter Score: 39152.0106"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 11500; Iter Score: 39152.0054"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 11600; Iter Score: 39152.0003"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 11700; Iter Score: 39151.9953"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 11800; Iter Score: 39151.9904"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 11900; Iter Score: 39151.9855"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 12000; Iter Score: 39151.9807"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 12100; Iter Score: 39151.9759"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 12200; Iter Score: 39151.9712"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 12300; Iter Score: 39151.9666"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 12400; Iter Score: 39151.962"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 12500; Iter Score: 39151.9575"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 12600; Iter Score: 39151.9531"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 12700; Iter Score: 39151.9487"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 12800; Iter Score: 39151.9443"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 12900; Iter Score: 39151.9401"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 13000; Iter Score: 39151.93[1] "Job Number: 88; Run Number: 6; Iter Number: 7100; Iter Score: 34291.8703"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 7200; Iter Score: 34291.8748"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 7300; Iter Score: 34291.8792"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 7400; Iter Score: 34291.8835"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 7500; Iter Score: 34291.8878"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 7600; Iter Score: 34291.892"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 7700; Iter Score: 34291.8961"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 7800; Iter Score: 34291.9002"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 7900; Iter Score: 34291.9042"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 8000; Iter Score: 34291.9081"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 8100; Iter Score: 34291.9119"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 8200; Iter Score: 34291.9157"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 8300; Iter Score: 34291.9195"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 8400; Iter Score: 34291.9232": 14400; Iter Score: 39151.8824"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 14500; Iter Score: 39151.8789"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 14600; Iter Score: 39151.8755"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 14700; Iter Score: 39151.8722"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 14800; Iter Score: 39151.8689"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 14900; Iter Score: 39151.8656"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 15000; Iter Score: 39151.8624"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 15100; Iter Score: 39151.8592"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 15200; Iter Score: 39151.8561"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 15300; Iter Score: 39151.853"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 15400; Iter Score: 39151.8499"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 15500; Iter Score: 39151.8469"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 15600; Iter Score: 39151.8439"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 15700; Iter Score: 39151.841"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 15800; Iter Score: 39151.8381"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 15900; Iter Score: 39151.8353"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 16000; Iter Score: 39151.8324"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 16100; Iter Score: 39151.8297"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 16200; Iter Score: 39151.8269"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 16300; Iter Score: 39151.8242"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 16400; Iter Score: 39151.8216"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 16500; Iter Score: 39151.8189"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 16600; Iter Score: 39151.8163"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 16700; Iter Score: 39151.8138"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 16800; Iter Score: 39151.8113"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 16900; Iter Score: 39151.8088"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 17000; Iter Score: 39151.8063"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 17100; Iter Score: 39151.8039"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 17200; Iter Score: 39151.8015"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 17300; Iter Score: 39151.7992"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 17400; Iter Score: 39151.7968"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 17500; Iter Score: 39151.7945"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 17600; Iter Score: 39151.7923"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 17700; Iter Score: 39151.79"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 17800; Iter Score: 39151.7878"
+[[1] "Job Number: 88; Run Number: 6; Iter Number: 12000; Iter Score: 34292.0225"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 12100; Iter Score: 34292.0245"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 12200; Iter Score: 34292.0265"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 12300; Iter Score: 34292.0284"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 12400; Iter Score: 34292.0303"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 12500; Iter Score: 34292.0322"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 12600; Iter Score: 34292.034"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 12700; Iter Score: 34292.0358"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 12800; Iter Score: 34292.0376"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 12900; Iter Score: 34292.0394"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 13000; Iter Score: 34292.0411"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 13100; Iter Score: 34292.0428"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 13200; Iter Score: 34292.0445"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 13300; Iter Score: 34292.0461"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 13400; Iter Score: 34292.0477"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 13500; Iter Score: 34292.0493"
+[1] "Job Number: 88; Run Number: 6; Run Number: 6; Iter Number: 19500; Iter Score: 39151.7547"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 19600; Iter Score: 39151.753"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 19700; Iter Score: 39151.7513"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 19800; Iter Score: 39151.7496"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 19900; Iter Score: 39151.748"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 20000; Iter Score: 39151.7463"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 20100; Iter Score: 39151.7447"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 20200; Iter Score: 39151.7432"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 20300; Iter Score: 39151.7416"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 20400; Iter Score: 39151.7401"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 20500; Iter Score: 39151.7385"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 20600; Iter Score: 39151.737"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 20700; Iter Score: 39151.7356"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 20800; Iter Score: 39151.7341"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 20900; Iter Score: 39151.7327"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 21000; Iter Score: 39151.7312"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 21100; Iter Score: 39151.7299"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 21200; Iter Score: 39151.7285"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 21300; Iter Score: 39151.7271"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 21400; Iter Score: 39151.7258"
+[1] "Job Number: 166; Run Number: 6; Iter Number: 21500; Iter Score: 39151.7245"
+[1] "Job Number: 166; Run Number: 6; Iter Numbe[1] "Job Number: 88; Run Number: 6; Iter Number: 15800; Iter Score: 34292.0793"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 15900; Iter Score: 34292.0804"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 16000; Iter Score: 34292.0814"
+[1] "Job Number: 88; Run Number: 6; Iter Number: 16100; Iter Score: 34292.0825"
+[1] "Converged in 16199 iterations."
+[1] "Job Number: 88; Run Number: 7; Iter Number: 100; Iter Score: 36156.8935"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 200; Iter Score: 34597.1633"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 300; Iter Score: 34274.7094"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 400; Iter Score: 34227.3008"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 500; Iter Score: 33991.8162"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 600; Iter Score: 34260.7393"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 700; Iter Score: 34291.2593"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 800; Iter Score: 34291.3261"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 900; Iter Score: 34291.3496"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 1000; Iter Score: 34291.3665"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 1100; Iter Score: 34291.3821"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 1200; Iter Score: 34291.3972"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 1300; Iter Score: 34291.4118"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 1400; Iter Score: 34291.4259"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 1500; Iter Score: 34291.4396"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 1600; Iter Score: 34291.4529"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 1700; Iter Score: 34291.4658"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 1800; Iter Score: 34291.4783"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 1900; Iter Score: 34291.4905"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 2000; Iter Score: 34291.5023"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 2100; Iter Score: 34291.5138"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 2200; Iter Score: 34291.5249"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 2300; Iter Score: 34291.5358"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 2400; Iter Score: 34291.5465"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 2500; Iter Score: 34291.5569"
+[1] "Job Number: 88; Run Number: 7; Iter Number00; Iter Score: 39162.9669"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 1200; Iter Score: 39160.3381"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 1300; Iter Score: 39158.3657"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 1400; Iter Score: 39156.9112"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 1500; Iter Score: 39155.847"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 1600; Iter Score: 39155.0644"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 1700; Iter Score: 39154.4896"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 1800; Iter Score: 39154.066"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 1900; Iter Score: 39153.7528"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 2000; Iter Score: 39153.5203"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 2100; Iter Score: 39153.3469"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 2200; Iter Score: 39153.2167"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 2300; Iter Score: 39153.1179"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 2400; Iter Score: 39153.0422"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 2500; Iter Score: 39152.9832"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 2600; Iter Score: 39152.9365"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 2700; Iter Score: 39152.8988"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 2800; Iter Score: 39152.8675"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 2900; Iter Score: 39152.8409"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 3000; Iter Score: 39152.8178"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 3100; Iter Score: 39152.7972"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 3200; Iter Score: 39152.7784"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 3300; Iter Score: 39152.7609"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 3400; Iter Score: 39152.7445"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 3500; Iter Score: 39152.7288"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 3600; Iter Score: 39152.7137"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 3700; Iter Score: 39152.6991"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 3800; Iter Score: 39152.6848"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 3900; Iter Score: 39152.6708"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 4000; Iter Score: 39152.657"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 4100; Iter Score: 39152.6435"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 4[1] "Job Number: 88; Run Number: 7; Iter Number: 5800; Iter Score: 34291.8056"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 5900; Iter Score: 34291.8111"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 6000; Iter Score: 34291.8165"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 6100; Iter Score: 34291.8218"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 6200; Iter Score: 34291.8271"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 6300; Iter Score: 34291.8323"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 6400; Iter Score: 34291.8374"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 6500; Iter Score: 34291.8424"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 6600; Iter Score: 34291.8473"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 6700; Iter Score: 34291.8521"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 6800; Iter Score: 34291.8569"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 6900; Iter Score: 34291.8616"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 7000; Iter Score: 34291.8662"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 7100; Iter Score: 34291.8707"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 7200; Iter Score: 34291.8752"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 7300; Iter Score: 34291.8796"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 7400; Iter Score: 34291.8839"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 7500; Iter Score: 34291.8882"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 7600; Iter Score: 34291.8924"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 7700; Iter Score: 34291.8965"
+[1] "Job Number: 88; Run Number: 7; Iter3961"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 6300; Iter Score: 39152.3859"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 6400; Iter Score: 39152.3758"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 6500; Iter Score: 39152.3659"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 6600; Iter Score: 39152.3561"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 6700; Iter Score: 39152.3465"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 6800; Iter Score: 39152.337"
+[1] "Job Number: 166; Run Nu[1] "Job Number: 88; Run Number: 7; Iter Number: 8500; Iter Score: 34291.9271"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 8600; Iter Score: 34291.9307"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 8700; Iter Score: 34291.9342"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 8800; Iter Score: 34291.9376"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 8900; Iter Score: 34291.941"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 9000; Iter Score: 34291.9443"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 9100; Iter Score: 34291.9476"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 9200; Iter Score: 34291.9509"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 9300; Iter Score: 34291.954"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 9400; Iter Score: 34291.9571"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 9500; Iter Score: 34291.9602"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 9600; Iter Score: 34291.9632"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 9700; Iter Score: 34291.9662"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 9800; Iter Score: 34291.9691"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 9900; Iter Score: 34291.972"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 10000; Iter Score: 34291.9748"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 10100; Iter Score: 34291.9776"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 10200; Iter Score: 34291.9804"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 10300; Iter Score: 34291.9831"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 10400; Iter Score: 34291.9857"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 10500; Iter Score: 34291.9883"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 10600; Iter Score: 34291.9909"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 10700; Iter Score: 34291.9934"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 10800; Iter Score: 34291.9959"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 10900; Iter Score: 34291.9983"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 11000; Iter Score: 34292.0007"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 11100; Iter Score: 34292.0031"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 11200; Iter Score: 34292.0054"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 11300; Iter Score: 34292.0077"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 11400; Iter Score: 34292.0099"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 11500; Iter Score: 34292.0122"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 11600; Iter Score: 34292.0143"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 11700; Iter Score: 34292.0165"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 11800; Iter Score: 34292.0186"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 11900; Iter Score: 34292.0206"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 12000; Iter Score: 34292.0227"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 12100; Iter Score: 34292.0247"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 12200; Iter Score: 34292.0266"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 12300; Iter Score: 34292.0286"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 12400; Iter Score: 34292.0305"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 12500; Iter Score: 34292.0323"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 12600; Iter Score: 34292.0342"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 12700; Iter Score: 34292.036"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 12800; Iter Score: 34292.0378"
+[1] "Job Number: 88; Run Number: 7; Iter Number: 12900; Iter Score: 34292.0395"
+[1"Job Number: 166; Run Number: 7; Iter Number: 11400; Iter Score: 39152.0099"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 11500; Iter Score: 39152.0048"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 11600; Iter Score: 39151.9997"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 11700; Iter Score: 39151.9947"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 11800; Iter Score: 39151.9897"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 11900; Iter Score: 39151.9849"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 12000; Iter Score: 39151.9801"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 12100; Iter Score: 39151.9753"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 12200; Iter Score: 39151.9706"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 12300; Iter Score: 39151.966"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 12400; Iter Score: 39151.9614"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 12500; Iter Score: 39151.9569"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 12600; Iter Score: 39151.9525"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 12700; Iter Score: 39151.9481"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 12800; Iter Score: 39151.9438"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 12900; Iter Score: 39151.9395"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 13000; Iter Score: 39151.9353"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 13100; Iter Score: 39151.9312"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 13200; Iter Score: 39151.9271"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 13300; Iter Score: 39151.923"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 13400; Iter Score: 39151.919"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 13500; Iter Score: 39151.9151"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 13600; Iter Score: 39151.9112"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 13700; Iter Score: 39151.9074"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 13800; Iter Score: 39151.9036"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 13900; Iter Score: 39151.8999"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 14000; Iter Score: 39151.8962"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 14100; Iter Score: 39151.8925"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 14200; Iter Score: 39151.889"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 14300; Iter Score: 39151.8854"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 14400; Iter Score: 39151.8819"
+[1] "Job Number: 166; Run Number: 7; Iter Number: 14500; Iter Score: 39151.8785"
+[1] "J[1] "Job Number: 88; Run Number: 8; Iter Number: 100; Iter Score: 36283.0182"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 200; Iter Score: 34737.7044"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 300; Iter Score: 34232.3144"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 400; Iter Score: 33985.3075"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 500; Iter Score: 34121.3332"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 600; Iter Score: 34291.1593"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 700; Iter Score: 34291.2931"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 800; Iter Score: 34291.3282"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 900; Iter Score: 34291.3488"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 1000; Iter Score: 34291.3658"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 1100; Iter Score: 34291.3817"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 1200; Iter Score: 34291.3969"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 1300; Iter Score: 34291.4116"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 1400; Iter Score: 34291.4259"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 1500; Iter Score: 34291.4396"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 1600; Iter Score: 34291.4529"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 1700; Iter Score: 34291.4659"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 1800; Iter Score: 34291.4784"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 1900; Iter Score: 34291.4905"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 2000; Iter Score: 34291.5023"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 2100; Iter Score: 34291.5138"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 2200; Iter Score: 34291.525"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 2300; Iter Score: 34291.5359"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 2400; Iter Score: 34291.5465"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 2500; Iter Score: 34291.5569"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 2600; Iter Score: 34291.5671"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 2700; Iter Score: 34291.577"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 2800; Iter Score: 34291.5867"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 2900; Iter Score: 34291.5962"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 3000; Iter Score: 34291.6055"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 3100; Iter Score: 34291.6146"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 3200; Iter Score: 34291.6235"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 3300; Iter Score: 34291.6322"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 3400; Iter Score: 34291.6408"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 3500; Iter Score: 34291.6492"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 3600; Iter Score: 34291.6574"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 3700; Iter Score: 34291.6654"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 3800; Iter Score: 34291.6734"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 3900; Iter Score: 34291.6811"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 4000; Iter Score: 34291.6888"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 4100; Iter Score: 34291.6962"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 4200; Iter Score: 34291.7036"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 4300; Iter Score: 34291.7108"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 4400; Iter Score: 34291.7179"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 4500; Iter Score: 34291.7249"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 4600; Iter Score: 34291.7318"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 4700; Iter Score: 34291.7385"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 4800; Iter Score: 34291.7451"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 4900; Iter Score: 34291.7516"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 5000; Iter Score: 34291.758"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 5100; Iter Score: 34291.7643"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 5200; Iter Score: 34291.7705"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 5300; Iter Score: 34291.7766"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 5400; Iter Score: 34291.7826"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 5500; Iter Score: 34291.7885"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 5600; Iter Score: 34291.7943"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 5700; Iter Score: 34291.8"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 5800; Iter Score: 34291.8056"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 5900; Iter Score: 34291.8111"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 6000; Iter Score: 34291.8165"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 6100; Iter Score: 34291.8219"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 6200; Iter Score: 34291.8271"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 6300; Iter Score: 34291.8323"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 6400; Iter Score: 34291.8374"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 6500; Iter Score: 34291.8424"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 6600; Iter Score: 34291.8473"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 6700; Iter Score: 34291.8522"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 6800; Iter Score: 34291.8569"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 6900; Iter Score: 34291.8616"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 7000; Iter Score: 34291.8662"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 7100; Iter Score: 34291.8708"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 7200; Iter Score: 34291.8752"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 7300; Iter Score: 34291.8796"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 7400; Iter Score: 34291.8839"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 7500; Iter Score: 34291.8882"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 7600; Iter Score: 34291.8924"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 7700; Iter Score: 34291.8965"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 7800; Iter Score: 34291.9006"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 7900; Iter Score: 34291.9045"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 8000; Iter Score: 34291.9085"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 8100; Iter Score: 34291.9123"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 8200; Iter Score: 34291.9161"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 8300; Iter Score: 34291.9199"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 8400; Iter Score: 34291.9235"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 8500; Iter Score: 34291.9271"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 8600; Iter Score: 34291.9307"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 8700; Iter Score: 34291.9342"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 8800; Iter Score: 34291.9376"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 8900; Iter Score: 34291.941"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 9000; Iter Score: 34291.9444"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 9100; Iter Score: 34291.9476"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 9200; Iter Score: 34291.9509"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 9300; Iter Score: 34291.954"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 9400; Iter Score: 34291.9572"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 9500; Iter Score: 34291.9602"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 9600; Iter Score: 34291.9633"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 9700; Iter Score: 34291.9662"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 9800; Iter Score: 34291.9692"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 9900; Iter Score: 34291.972"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 10000; Iter Score: 34291.9749"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 10100; Iter Score: 34291.9776"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 10200; Iter Score: 34291.9804"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 10300; Iter Score: 34291.9831"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 10400; Iter Score: 34291.9857"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 10500; Iter Score: 34291.9883"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 10600; Iter Score: 34291.9909"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 10700; Iter Score: 34291.9934"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 10800; Iter Score: 34291.9959"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 10900; Iter Score: 34291.9983"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 11000; Iter Score: 34292.0007"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 11100; Iter Score: 34292.0031"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 11200; Iter Score: 34292.0054"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 11300; Iter Score: 34292.0077"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 11400; Iter Score: 34292.01"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 11500; Iter Score: 34292.0122"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 11600; Iter Score: 34292.0143"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 11700; Iter Score: 34292.0165"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 11800; Iter Score: 34292.0186"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 11900; Iter Score: 34292.0206"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 12000; Iter Score: 34292.0227"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 12100; Iter Score: 34292.0247"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 12200; Iter Score: 34292.0266"
+[1] "Job Number: 88; Run Number: 8; Iter Number: 12300; I; Iter Score: 39225.9657"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 800; Iter Score: 40645.0354"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 900; Iter Score: 40435.5989"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 1000; Iter Score: 39972.5554"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 1100; Iter Score: 39666.4946"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 1200; Iter Score: 39443.0616"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 1300; Iter Score: 39301.6944"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 1400; Iter Score: 39215.7592"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 1500; Iter Score: 39165.1031"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 1600; Iter Score: 39145.3638"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 1700; Iter Score: 39144.4735"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 1800; Iter Score: 39147.1641"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 1900; Iter Score: 39123.4366"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 2000; Iter Score: 39078.4351"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 2100; Iter Score: 39027.3572"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 2200; Iter Score: 38950.8839"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 2300; Iter Score: 39033.0348"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 2400; Iter Score: 39141.9014"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 2500; Iter Score: 39176.4124"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 2600; Iter Score: 39177.4387"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 2700; Iter Score: 39171.6366"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 2800; Iter Score: 39166.3617"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 2900; Iter Score: 39162.477"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 3000; Iter Score: 39159.7535"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 3100; Iter Score: 39157.8597"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 3200; Iter Score: 39156.528"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 3300; Iter Score: 39155.5773"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 3400; Iter Score: 39154.8879"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 3500; Iter Score: 39154.38"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 3600; Iter Score: 39154"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 3700; Iter Score: 39153.7115"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 3800; Iter Score: 39153.4895"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 3900; Iter Score: 39153.3163"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 4000; Iter Score: 39153.1793"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 4100; Iter Score: 39153.0696"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 4200; Iter Score: 39152.9805"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 4300; Iter Score: 39152.9072"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 4400; Iter Score: 39152.8462"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 4500; Iter Score: 39152.7947"
+[1] "Job Number: 166; Run Number: 9; It[1] "Job Number: 88; Run Number: 9; Iter Number: 100; Iter Score: 35739.9712"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 200; Iter Score: 34272.4665"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 300; Iter Score: 33942.0539"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 400; Iter Score: 34022.6709"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 500; Iter Score: 34025.0103"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 600; Iter Score: 34025.3062"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 700; Iter Score: 34025.492"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 800; Iter Score: 34025.6575"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 900; Iter Score: 34025.8394"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 1000; Iter Score: 34026.0846"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 1100; Iter Score: 34026.4853"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 1200; Iter Score: 34027.3775"
+[1] "Job Number: 88; Run Number: 9; Iter Number: 1300; Iter Scor1] "Job Number: 166; Run Number: 9; Iter Number: 5900; Iter Score: 39152.4607"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 6000; Iter Score: 39152.4473"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 6100; Iter Score: 39152.4345"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 6200; Iter Score: 39152.422"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 6300; Iter Score: 39152.41"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 6400; Iter Score: 39152.3984"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 6500; Iter Score: 39152.3871"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 6600; Iter Score: 39152.3761"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 6700; Iter Score: 39152.3654"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 6800; Iter Score: 39152.3549"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 6900; Iter Score: 39152.3447"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 7000; Iter Score: 39152.3346"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 7100; Iter Score: 39152.3248"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 7200; Iter Score: 39152.3152"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 7300; Iter Score: 39152.3058"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 7400; Iter Score: 39152.2965"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 7500; Iter Score: 39152.2874"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 7600; Iter Score: 39152.2784"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 7700; Iter Score: 39152.2696"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 7800; Iter Score: 39152.2609"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 7900; Iter Score: 39152.2524"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 8000; Iter Score: 39152.2439"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 8100; Iter Score: 39152.2357"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 8200; Iter Score: 39152.2275"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 8300; Iter Score: 39152.2194"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 8400; Iter Score: 39152.2115"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 8500; Iter Score: 39152.2037"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 8600; Iter Score: 39152.196"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 8700; Iter Score: 39152.1884"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 8800; Iter Score: 39152.1809"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 8900; Iter Score: 39152.1735"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 9000; Iter Score: 39152.1662"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 9100; Iter Score: 39152.1589"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 9200; Iter Score: 39152.1518"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 9300; Iter Score: 39152.1448"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 9400; Iter Score: 39152.1379"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 9500; Iter Score: 39152.1311"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 9600; Iter Score: 39152.1244"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 9700; Iter Score: 39152.1177"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 9800; Iter Score: 39152.1111"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 9900; Iter Score: 39152.1047"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 10000; Iter Score: 39152.0983"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 10100; Iter Score: 39152.092"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 10200; Iter Score: 39152.0858"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 10300; Iter Score: 39152.0796"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 10400; Iter Score: 39152.0736"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 10500; Iter Score: 39152.0676"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 10600; Iter Score: 39152.0617"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 10700; Iter Score: 39152.0559"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 10800; Iter Score: 39152.0501"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 10900; Iter Score: 39152.0445"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 11000; Iter Score: 39152.0389"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 11100; Iter Score: 39152.0333"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 11200; Iter Score: 39152.0279"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 11300; Iter Score: 39152.0225"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 11400; Iter Score: 39152.0172"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 11500; Iter Score: 39152.012"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 11600; Iter Score: 39152.0068"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 11700; Iter Score: 39152.0017"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 11800; Iter Score: 39151.9967"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 11900; Iter Score: 39151.9917"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 12000; Iter Score: 39151.9868"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 12100; Iter Score: 39151.982"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 12200; Iter Score: 39151.9772"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 12300; Iter Score: 39151.9725"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 12400; Iter Score: 39151.9678"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 12500; Iter Score: 39151.9632"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 12600; Iter Score: 39151.9587"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 12700; Iter Score: 39151.9543"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 12800; Iter Score: 39151.9499"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 12900; Iter Score: 39151.9455"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 13000; Iter Score: 39151.9412"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 13100; Iter Score: 39151.937"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 13200; Iter Score: 39151.9328"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 13300; Iter Score: 39151.9287"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 13400; Iter Score: 39151.9246"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 13500; Iter Score: 39151.9206"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 13600; Iter Score: 39151.9166"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 13700; Iter Score: 39151.9127"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 13800; Iter Score: 39151.9089"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 13900; Iter Score: 39151.9051"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 14000; Iter Score: 39151.9013"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 14100; Iter Score: 39151.8976"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 14200; Iter Score: 39151.894"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 14300; Iter Score: 39151.8904"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 14400; Iter Score: 39151.8868"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 14500; Iter Score: 39151.8833"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 14600; Iter Score: 39151.8799"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 14700; Iter Score: 39151.8764"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 14800; Iter Score: 39151.8731"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 14900; Iter Score: 39151.8698"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 15000; Iter Score: 39151.8665"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 15100; Iter Score: 39151.8632"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 15200; Iter Score: 39151.8601"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 15300; Iter Score: 39151.8569"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 15400; Iter Score: 39151.8538"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 15500; Iter Score: 39151.8507"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 15600; Iter Score: 39151.8477"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 15700; Iter Score: 39151.8447"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 15800; Iter Score: 39151.8418"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 15900; Iter Score: 39151.8389"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 16000; Iter Score: 39151.836"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 16100; Iter Score: 39151.8332"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 16200; Iter Score: 39151.8304"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 16300; Iter Score: 39151.8277"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 16400; Iter Score: 39151.825"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 16500; Iter Score: 39151.8223"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 16600; Iter Score: 39151.8196"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 16700; Iter Score: 39151.817"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 16800; Iter Score: 39151.8145"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 16900; Iter Score: 39151.8119"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 17000; Iter Score: 39151.8094"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 17100; Iter Score: 39151.807"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 17200; Iter Score: 39151.8046"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 17300; Iter Score: 39151.8022"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 17400; Iter Score: 39151.7998"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 17500; Iter Score: 39151.7975"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 17600; Iter Score: 39151.7952"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 17700; Iter Score: 39151.7929"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 17800; Iter Score: 39151.7906"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 17900; Iter Score: 39151.7884"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 18000; Iter Score: 39151.7863"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 18100; Iter Score: 39151.7841"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 18200; Iter Score: 39151.782"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 18300; Iter Score: 39151.7799"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 18400; Iter Score: 39151.7778"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 18500; Iter Score: 39151.7758"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 18600; Iter Score: 39151.7738"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 18700; Iter Score: 39151.7718"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 18800; Iter Score: 39151.7699"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 18900; Iter Score: 39151.7679"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 19000; Iter Score: 39151.766"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 19100; Iter Score: 39151.7642"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 19200; Iter Score: 39151.7623"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 19300; Iter Score: 39151.7605"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 19400; Iter Score: 39151.7587"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 19500; Iter Score: 39151.7569"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 19600; Iter Score: 39151.7552"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 19700; Iter Score: 39151.7534"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 19800; Iter Score: 39151.7517"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 19900; Iter Score: 39151.7501"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 20000; Iter Score: 39151.7484"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 20100; Iter Score: 39151.7468"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 20200; Iter Score: 39151.7452"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 20300; Iter Score: 39151.7436"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 20400; Iter Score: 39151.742"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 20500; Iter Score: 39151.7405"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 20600; Iter Score: 39151.7389"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 20700; Iter Score: 39151.7374"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 20800; Iter Score: 39151.736"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 20900; Iter Score: 39151.7345"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 21000; Iter Score: 39151.7331"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 21100; Iter Score: 39151.7316"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 21200; Iter Score: 39151.7302"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 21300; Iter Score: 39151.7288"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 21400; Iter Score: 39151.7275"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 21500; Iter Score: 39151.7261"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 21600; Iter Score: 39151.7248"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 21700; Iter Score: 39151.7235"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 21800; Iter Score: 39151.7222"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 21900; Iter Score: 39151.7209"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 22000; Iter Score: 39151.7197"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 22100; Iter Score: 39151.7184"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 22200; Iter Score: 39151.7172"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 22300; Iter Score: 39151.716"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 22400; Iter Score: 39151.7148"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 22500; Iter Score: 39151.7137"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 22600; Iter Score: 39151.7125"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 22700; Iter Score: 39151.7114"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 22800; Iter Score: 39151.7102"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 22900; Iter Score: 39151.7091"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 23000; Iter Score: 39151.708"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 23100; Iter Score: 39151.707"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 23200; Iter Score: 39151.7059"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 23300; Iter Score: 39151.7049"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 23400; Iter Score: 39151.7038"
+[1] "Job Number: 166; Run Number: 9; Iter Number: 23500; Iter Score: 39151.7028"
+[1] "Converged in 23583 iterations."
+[1] "Job Number: 166; Run Number: 10; Iter Number: 100; Iter Score: 41785.3878"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 200; Iter Score: 39335.1796"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 300; Iter Score: 38677.3018"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 400; Iter Score: 38372.9488"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 500; Iter Score: 38175.1175"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 600; Iter Score: 38294.001"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 700; Iter Score: 39051.8532"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 800; Iter Score: 39035.9871"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 900; Iter Score: 38940.6121"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 1000; Iter Score: 38935.9437"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 1100; Iter Score: 39036.2055"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 1200; Iter Score: 39113.5526"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 1300; Iter Score: 39140.4269"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 1400; Iter Score: 39147.0645"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 1500; Iter Score: 39148.7411"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 1600; Iter Score: 39149.5253"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 1700; Iter Score: 39150.1512"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 1800; Iter Score: 39150.7149"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 1900; Iter Score: 39151.2041"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 2000; Iter Score: 39151.6082"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 2100; Iter Score: 39151.9296"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 2200; Iter Score: 39152.1777"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 2300; Iter Score: 39152.3647"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 2400; Iter Score: 39152.5023"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 2500; Iter Score: 39152.601"
+[1] "Job Number: 166; Run Number: 10; Iter Number: 2600; I; Iter Score: 39562.0712"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 17300; Iter Score: 39562.0687"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 17400; Iter Score: 39562.0662"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 17500; Iter Score: 39562.0638"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 17600; Iter Score: 39562.0614"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 17700; Iter Score: 39562.059"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 17800; Iter Score: 39562.0566"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 17900; Iter Score: 39562.0543"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 18000; Iter Score: 39562.052"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 18100; Iter Score: 39562.0497"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 18200; Iter Score: 39562.0475"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 18300; Iter Score: 39562.0452"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 18400; Iter Score: 39562.043"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 18500; Iter Score: 39562.0409"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 18600; Iter Score: 39562.0387"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 18700; Iter Score: 39562.0366"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 18800; Iter Score: 39562.0345"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 18900; Iter Score: 39562.0324"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 19000; Iter Score: 39562.0304"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 19100; Iter Score: 39562.0283"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 19200; Iter Score: 39562.0263"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 19300; Iter Score: 39562.0244"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 19400; Iter Score: 39562.0224"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 19500; Iter Score: 39562.0205"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 19600; Iter Score: 39562.0186"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 19700; Iter Score: 39562.0167"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 19800; Iter Score: 39562.0148"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 19900; Iter Score: 39562.013"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 20000; Iter Score: 39562.0112"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 20100; Iter Score: 39562.0094"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 20200; Iter Score: 39562.0076"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 20300; Iter Score: 39562.0058"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 20400; Iter Score: 39562.0041"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 20500; Iter Score: 39562.0024"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 20600; Iter Score: 39562.0007"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 20700; Iter Score: 39561.999"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 20800; Iter Score: 39561.9974"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 20900; Iter Score: 39561.9957"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 21000; Iter Score: 39561.9941"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 21100; Iter Score: 39561.9925"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 21200; Iter Score: 39561.9909"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 21300; Iter Score: 39561.9894"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 21400; Iter Score: 39561.9878"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 21500; Iter Score: 39561.9863"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 21600; Iter Score: 39561.9848"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 21700; Iter Score: 39561.9833"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 21800; Iter Score: 39561.9819"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 21900; Iter Score: 39561.9804"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 22000; Iter Score: 39561.979"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 22100; Iter Score: 39561.9776"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 22200; Iter Score: 39561.9762"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 22300; Iter Score: 39561.9748"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 22400; Iter Score: 39561.9734"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 22500; Iter Score: 39561.9721"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 22600; Iter Score: 39561.9707"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 22700; Iter Score: 39561.9694"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 22800; Iter Score: 39561.9681"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 22900; Iter Score: 39561.9668"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 23000; Iter Score: 39561.9656"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 23100; Iter Score: 39561.9643"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 23200; Iter Score: 39561.9631"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 23300; Iter Score: 39561.9619"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 23400; Iter Score: 39561.9607"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 23500; Iter Score: 39561.9595"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 23600; Iter Score: 39561.9583"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 23700; Iter Score: 39561.9571"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 23800; Iter Score: 39561.956"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 23900; Iter Score: 39561.9548"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 24000; Iter Score: 39561.9537"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 24100; Iter Score: 39561.9526"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 24200; Iter Score: 39561.9515"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 24300; Iter Score: 39561.9504"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 24400; Iter Score: 39561.9494"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 24500; Iter Score: 39561.9483"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 24600; Iter Score: 39561.9473"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 24700; Iter Score: 39561.9463"
+[1] "Job Number: 191; Run Number: 9; Iter Number: 24800; Iter Score: 39561.9452"
+[1] "Converged in 24877 iterations."
+[1] "Job Number: 191; Run Number: 10; Iter Number: 100; Iter Score: 40680.5479"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 200; Iter Score: 39280.4714"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 300; Iter Score: 39374.4987"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 400; Iter Score: 39141.0675"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 500; Iter Score: 39244.9105"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 600; Iter Score: 39935.4162"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 700; Iter Score: 39394.3129"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 800; Iter Score: 39278.9117"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 900; Iter Score: 39243.0274"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 1000; Iter Score: 39242.9915"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 1100; Iter Score: 39248.1154"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 1200; Iter Score: 39252.5756"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 1300; Iter Score: 39254.2489"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 1400; Iter Score: 39250.7846"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 1500; Iter Score: 39243.0948"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 1600; Iter Score: 39261.0555"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 1700; Iter Score: 39459.6032"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 1800; Iter Score: 39573.5971"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 1900; Iter Score: 39588.5358"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 2000; Iter Score: 39582.3117"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 2100; Iter Score: 39575.4816"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 2200; Iter Score: 39570.8732"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 2300; Iter Score: 39568.0203"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 2400; Iter Score: 39566.2465"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 2500; Iter Score: 39565.1342"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 2600; Iter Score: 39564.4201"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 2700; Iter Score: 39563.9516"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 2800; Iter Score: 39563.6402"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 2900; Iter Score: 39563.4281"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 3000; Iter Score: 39563.2804"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 3100; Iter Score: 39563.175"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 3200; Iter Score: 39563.0974"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 3300; Iter Score: 39563.0387"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 3400; Iter Score: 39562.9927"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 3500; Iter Score: 39562.9555"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 3600; Iter Score: 39562.9247"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 3700; Iter Score: 39562.8983"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 3800; Iter Score: 39562.8752"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 3900; Iter Score: 39562.8547"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 4000; Iter Score: 39562.8361"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 4100; Iter Score: 39562.8191"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 4200; Iter Score: 39562.8033"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 4300; Iter Score: 39562.7886"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 4400; Iter Score: 39562.7748"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 4500; Iter Score: 39562.7617"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 4600; Iter Score: 39562.7492"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 4700; Iter Score: 39562.7373"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 4800; Iter Score: 39562.7259"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 4900; Iter Score: 39562.715"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 5000; Iter Score: 39562.7044"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 5100; Iter Score: 39562.6941"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 5200; Iter Score: 39562.6842"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 5300; Iter Score: 39562.6745"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 5400; Iter Score: 39562.6651"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 5500; Iter Score: 39562.6559"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 5600; Iter Score: 39562.647"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 5700; Iter Score: 39562.6382"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 5800; Iter Score: 39562.6296"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 5900; Iter Score: 39562.6212"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 6000; Iter Score: 39562.6129"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 6100; Iter Score: 39562.6047"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 6200; Iter Score: 39562.5967"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 6300; Iter Score: 39562.5887"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 6400; Iter Score: 39562.5809"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 6500; Iter Score: 39562.5732"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 6600; Iter Score: 39562.5656"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 6700; Iter Score: 39562.558"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 6800; Iter Score: 39562.5506"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 6900; Iter Score: 39562.5432"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 7000; Iter Score: 39562.5359"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 7100; Iter Score: 39562.5287"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 7200; Iter Score: 39562.5216"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 7300; Iter Score: 39562.5146"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 7400; Iter Score: 39562.5076"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 7500; Iter Score: 39562.5007"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 7600; Iter Score: 39562.4938"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 7700; Iter Score: 39562.487"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 7800; Iter Score: 39562.4803"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 7900; Iter Score: 39562.4737"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 8000; Iter Score: 39562.4671"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 8100; Iter Score: 39562.4605"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 8200; Iter Score: 39562.4541"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 8300; Iter Score: 39562.4477"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 8400; Iter Score: 39562.4413"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 8500; Iter Score: 39562.435"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 8600; Iter Score: 39562.4288"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 8700; Iter Score: 39562.4226"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 8800; Iter Score: 39562.4165"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 8900; Iter Score: 39562.4104"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 9000; Iter Score: 39562.4044"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 9100; Iter Score: 39562.3985"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 9200; Iter Score: 39562.3926"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 9300; Iter Score: 39562.3868"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 9400; Iter Score: 39562.381"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 9500; Iter Score: 39562.3753"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 9600; Iter Score: 39562.3696"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 9700; Iter Score: 39562.364"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 9800; Iter Score: 39562.3584"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 9900; Iter Score: 39562.3529"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 10000; Iter Score: 39562.3474"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 10100; Iter Score: 39562.342"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 10200; Iter Score: 39562.3367"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 10300; Iter Score: 39562.3314"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 10400; Iter Score: 39562.3261"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 10500; Iter Score: 39562.3209"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 10600; Iter Score: 39562.3158"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 10700; Iter Score: 39562.3107"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 10800; Iter Score: 39562.3056"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 10900; Iter Score: 39562.3006"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 11000; Iter Score: 39562.2957"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 11100; Iter Score: 39562.2908"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 11200; Iter Score: 39562.2859"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 11300; Iter Score: 39562.2811"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 11400; Iter Score: 39562.2764"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 11500; Iter Score: 39562.2717"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 11600; Iter Score: 39562.267"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 11700; Iter Score: 39562.2624"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 11800; Iter Score: 39562.2579"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 11900; Iter Score: 39562.2533"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 12000; Iter Score: 39562.2489"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 12100; Iter Score: 39562.2444"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 12200; Iter Score: 39562.2401"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 12300; Iter Score: 39562.2357"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 12400; Iter Score: 39562.2314"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 12500; Iter Score: 39562.2272"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 12600; Iter Score: 39562.223"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 12700; Iter Score: 39562.2188"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 12800; Iter Score: 39562.2147"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 12900; Iter Score: 39562.2107"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 13000; Iter Score: 39562.2066"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 13100; Iter Score: 39562.2026"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 13200; Iter Score: 39562.1987"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 13300; Iter Score: 39562.1948"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 13400; Iter Score: 39562.1909"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 13500; Iter Score: 39562.1871"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 13600; Iter Score: 39562.1833"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 13700; Iter Score: 39562.1796"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 13800; Iter Score: 39562.1759"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 13900; Iter Score: 39562.1722"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 14000; Iter Score: 39562.1686"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 14100; Iter Score: 39562.165"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 14200; Iter Score: 39562.1615"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 14300; Iter Score: 39562.158"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 14400; Iter Score: 39562.1545"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 14500; Iter Score: 39562.1511"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 14600; Iter Score: 39562.1477"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 14700; Iter Score: 39562.1444"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 14800; Iter Score: 39562.141"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 14900; Iter Score: 39562.1378"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 15000; Iter Score: 39562.1345"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 15100; Iter Score: 39562.1313"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 15200; Iter Score: 39562.1281"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 15300; Iter Score: 39562.125"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 15400; Iter Score: 39562.1219"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 15500; Iter Score: 39562.1188"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 15600; Iter Score: 39562.1158"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 15700; Iter Score: 39562.1128"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 15800; Iter Score: 39562.1098"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 15900; Iter Score: 39562.1069"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 16000; Iter Score: 39562.104"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 16100; Iter Score: 39562.1011"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 16200; Iter Score: 39562.0983"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 16300; Iter Score: 39562.0955"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 16400; Iter Score: 39562.0927"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 16500; Iter Score: 39562.09"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 16600; Iter Score: 39562.0873"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 16700; Iter Score: 39562.0846"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 16800; Iter Score: 39562.0819"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 16900; Iter Score: 39562.0793"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 17000; Iter Score: 39562.0767"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 17100; Iter Score: 39562.0741"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 17200; Iter Score: 39562.0716"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 17300; Iter Score: 39562.0691"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 17400; Iter Score: 39562.0666"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 17500; Iter Score: 39562.0642"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 17600; Iter Score: 39562.0618"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 17700; Iter Score: 39562.0594"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 17800; Iter Score: 39562.057"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 17900; Iter Score: 39562.0547"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 18000; Iter Score: 39562.0524"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 18100; Iter Score: 39562.0501"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 18200; Iter Score: 39562.0478"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 18300; Iter Score: 39562.0456"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 18400; Iter Score: 39562.0434"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 18500; Iter Score: 39562.0412"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 18600; Iter Score: 39562.0391"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 18700; Iter Score: 39562.037"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 18800; Iter Score: 39562.0349"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 18900; Iter Score: 39562.0328"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 19000; Iter Score: 39562.0307"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 19100; Iter Score: 39562.0287"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 19200; Iter Score: 39562.0267"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 19300; Iter Score: 39562.0247"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 19400; Iter Score: 39562.0227"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 19500; Iter Score: 39562.0208"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 19600; Iter Score: 39562.0189"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 19700; Iter Score: 39562.017"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 19800; Iter Score: 39562.0151"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 19900; Iter Score: 39562.0133"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 20000; Iter Score: 39562.0115"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 20100; Iter Score: 39562.0097"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 20200; Iter Score: 39562.0079"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 20300; Iter Score: 39562.0061"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 20400; Iter Score: 39562.0044"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 20500; Iter Score: 39562.0027"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 20600; Iter Score: 39562.001"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 20700; Iter Score: 39561.9993"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 20800; Iter Score: 39561.9976"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 20900; Iter Score: 39561.996"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 21000; Iter Score: 39561.9944"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 21100; Iter Score: 39561.9928"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 21200; Iter Score: 39561.9912"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 21300; Iter Score: 39561.9896"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 21400; Iter Score: 39561.9881"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 21500; Iter Score: 39561.9866"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 21600; Iter Score: 39561.9851"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 21700; Iter Score: 39561.9836"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 21800; Iter Score: 39561.9821"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 21900; Iter Score: 39561.9807"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 22000; Iter Score: 39561.9792"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 22100; Iter Score: 39561.9778"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 22200; Iter Score: 39561.9764"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 22300; Iter Score: 39561.975"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 22400; Iter Score: 39561.9737"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 22500; Iter Score: 39561.9723"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 22600; Iter Score: 39561.971"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 22700; Iter Score: 39561.9697"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 22800; Iter Score: 39561.9683"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 22900; Iter Score: 39561.9671"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 23000; Iter Score: 39561.9658"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 23100; Iter Score: 39561.9645"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 23200; Iter Score: 39561.9633"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 23300; Iter Score: 39561.9621"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 23400; Iter Score: 39561.9609"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 23500; Iter Score: 39561.9597"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 23600; Iter Score: 39561.9585"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 23700; Iter Score: 39561.9573"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 23800; Iter Score: 39561.9562"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 23900; Iter Score: 39561.955"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 24000; Iter Score: 39561.9539"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 24100; Iter Score: 39561.9528"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 24200; Iter Score: 39561.9517"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 24300; Iter Score: 39561.9506"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 24400; Iter Score: 39561.9496"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 24500; Iter Score: 39561.9485"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 24600; Iter Score: 39561.9475"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 24700; Iter Score: 39561.9464"
+[1] "Job Number: 191; Run Number: 10; Iter Number: 24800; Iter Score: 39561.9454"
+[1] "Converged in 24894 iterations."
+> 
+> ###############################
+> # Symmetric Subspace Distance #
+> ###############################
+> 
+> symm_subspace_dist <- function(U, V) {
++   
++   if (nrow(U) != max(nrow(U), ncol(U))) {U <- t(U)}
++   if (nrow(V) != max(nrow(V), ncol(V))) {V <- t(V)}
++   
++   qrU <- qr.Q(qr(U))
++   qrV <- qr.Q(qr(V))
++   
++   m <- ncol(U)
++   n <- ncol(V)
++   
++   dUV <- sqrt( max(m,n) - sum((t(qrU) %*% qrV)^2) )
++   
++   ratio <- dUV/sqrt( max(m,n))
++   
++   ratio
++   
++ }
+> 
+> output_all <- output_all %>% 
++   mutate(pca_norm              = map2(sim, pca_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_uncenter_norm     = map2(sim, pca_uncenter_pred,    function(x,y) norm(x-y, "F")/norm(x, "F")),
++          fa_norm               = map2(sim, fa_pred,     function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_l2_norm           = map2(sim, nmf_l2_pred, function(x,y) norm(x-y, "F")/norm(x, "F")),
++          nmf_p_norm            = map2(sim, nmf_p_pred,  function(x,y) norm(x-y, "F")/norm(x, "F")),
++          bnmf_norm             = map2(sim, bnmf_pred,   function(x,y) norm(x-y, "F")/norm(x, "F")),
++          pca_rotation_ssdist   = map2(true_patterns, pca_rotations,   symm_subspace_dist),
++          pca_scores_ssdist     = map2(true_scores,   pca_scores,      symm_subspace_dist),
++          pca_uncenter_rotation_ssdist   = map2(true_patterns, pca_uncenter_rotations,   symm_subspace_dist),
++          pca_uncenter_scores_ssdist     = map2(true_scores,   pca_uncenter_scores,      symm_subspace_dist),
++          fa_rotations_ssdist   = map2(true_patterns, fa_rotations,    symm_subspace_dist),
++          fa_scores_ssdist      = map2(true_scores,   fa_scores,       symm_subspace_dist),
++          nmf_l2_loading_ssdist = map2(true_patterns, nmf_l2_loadings, symm_subspace_dist),
++          nmf_l2_scores_ssdist  = map2(true_scores,   nmf_l2_scores,   symm_subspace_dist),
++          nmf_p_loading_ssdist  = map2(true_patterns, nmf_p_loadings,  symm_subspace_dist),
++          nmf_p_scores_ssdist   = map2(true_scores,   nmf_p_scores,    symm_subspace_dist),
++          bnmf_loading_ssdist   = map2(true_patterns, bnmf_loadings,   symm_subspace_dist),
++          bnmf_scores_ssdist    = map2(true_scores,   bnmf_scores,     symm_subspace_dist))
+> 
+> #####
+> # Save
+> #####
+>                            
+> output_all <- output_all %>% dplyr::select(-grep("_out", colnames(.)))
+> 
+> save(output_all, file = paste0("/ifs/scratch/msph/ehs/eag2186/npbnmf/raw_out/raw_sims", job_num, ".RDA"))
+> 
+> proc.time()
+     user    system   elapsed 
+34660.712   163.747 35281.178 
