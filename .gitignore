@@ -4,9 +4,9 @@
 .Ruserdata
 *.html
 *.rData
-*.csv
+**/*.csv
+**/log-mat{*}
+**/*.mat
 
 Data/*
-*.RDA
-*/*.RDA
-*/*/*.RDA
+**/*.RDA
