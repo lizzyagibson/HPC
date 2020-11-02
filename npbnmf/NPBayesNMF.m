@@ -1,4 +1,4 @@
-function [EWA, EH] = NPBayesNMF(X,Kinit)
+function [EWA, EH] = NPBayesNMF(X)
 % X is the data matrix of non-negative values
 % Kinit is the maximum allowable factorization (initial). The algorithm tries to reduce this number.
 %       the size of EWA and EH indicate the learned factorization.
@@ -9,6 +9,7 @@ function [EWA, EH] = NPBayesNMF(X,Kinit)
 bnp_switch = 1;  % this turns on/off the Bayesian nonparametric part. On now.
 
 [dim,N] = size(X);
+Kinit = N
 
 end_score = zeros(100, 1);
 
