@@ -1,4 +1,5 @@
-function [EWA, EH] = NPBayesNMF(X)
+function [EWA, EH, varH, alphaH, betaH, varWA] = NPBayesNMF(X)
+    %EWA_low, EH_low, varWA_low, varH_low, alphaH_low, betaH_low] = NPBayesNMF(X)
 % X is the data matrix of non-negative values
 % Kinit is the maximum allowable factorization (initial). The algorithm tries to reduce this number.
 %       the size of EWA and EH indicate the learned factorization.
@@ -9,25 +10,22 @@ function [EWA, EH] = NPBayesNMF(X)
 bnp_switch = 1;  % this turns on/off the Bayesian nonparametric part. On now.
 
 [dim,N] = size(X);
-Kinit = N
 
-end_score = zeros(100, 1);
+nruns = 100;
+end_score = zeros(nruns, 1);
 
-%Not sure if i need this
-EA = [];
-EWA = [];
-EH = [];
-EW = [];
+Kinit = N;
 
-for i = 1:100
+for i = 1:nruns % Switch back to 1:10
 
 K = Kinit;
-    
-h01 = 1; % Try h with non-sparse prior, yes!
+ 
 %h01 = 1/Kinit;
+h01 = 1; % Try h with non-sparse prior, yes!
 h02 = 1;
 
 w01 = 1;
+%w01 = 1/dim;
 w02 = 1;
 W1 = gamrnd(dim*ones(dim,Kinit),1/dim);
 % gamrnd(A,B) generates random numbers from the gamma distribution 
@@ -86,7 +84,7 @@ for iter = 1:num_iter
     
     % This is the sparse prior on A, pushing A to zero
     idx_prune = find(A1./A2 < 10^-3);
-    if length(idx_prune) > 0
+    if ~isempty(idx_prune)
       W1(:,idx_prune) = [];
       W2(:,idx_prune) = [];
       A1(idx_prune) = [];
@@ -98,33 +96,24 @@ for iter = 1:num_iter
     
     score(iter) = sum(sum(abs(X-(W1./W2)*diag(A1./A2)*(H1./H2))));
     
-    disp(['Run Number: ' num2str(i) '. Iter Number: ' num2str(iter) '. Iter Score: ' num2str(sum(sum(abs(X-(W1./W2)*diag(A1./A2)*(H1./H2)))))]); 
- 
  if iter > 1 && abs(score(iter-1)-score(iter)) < 1e-5  
      break
  end
   
 end
 
-% EA = A1./A2;
-% EWA = (W1./W2)*diag(A1./A2);
-% EH = H1./H2;
-% EW = (W1./W2); 
-
 end_score(i) = score(find(score,1,'last'));  
-
-% Among the results, use the fitted variational parameters that achieve the highest ELBO
-if i == 1 | (i > 1 && (end_score(i) >= max(end_score)))
-    EA = A1./A2;
+disp(['Run Number: ' num2str(i) '. Iter Number: ' num2str(iter) '. Iter Score: ' num2str(end_score(i))]); 
+ 
+% Among the results, use the fitted variational parameters that achieve the HIGHEST ELBO
+if i == 1 || (i > 1 && (end_score(i) >= max(end_score)))
     EWA = (W1./W2)*diag(A1./A2);
     EH = H1./H2;
-    EW = (W1./W2); 
+    varWA = ((W1 .* A1) .* (W1 + A1 + 1)) ./ (W2.^2 .* A2.^2);
+    varH = H1 ./ H2.^2;
+    alphaH = H1;
+    betaH = H2;
+
 end
-   
-% disp(['Run Number: ' num2str(i) '. Run score: ' num2str(end_score(i))]);
-% disp(['Run Number: ' num2str(i) '. A vector: ']); 
-% Aout = A1./A2;
-% Aout(1:4)
-% EA(1:4)
 
 end
