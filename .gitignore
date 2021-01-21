@@ -5,8 +5,13 @@
 *.html
 *.rData
 **/*.csv
+*.csv
 **/log-mat{*}
+log/*
+*/log/*
 **/*.mat
+*.mat
 
 Data/*
 **/*.RDA
+*.RDA
